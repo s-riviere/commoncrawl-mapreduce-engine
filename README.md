@@ -1,3 +1,5 @@
+# PLEASE DO NOT RUN THIS AT ALL THERE IS ACCESS ISSUE WE DONT HAVE RIGHT TO USE JUMP HOST
+
 # MapReduce — Challenge 1 : charge CPU distribuée
 
 Déploiement d'un serveur de charge CPU sur les machines des salles TP de
