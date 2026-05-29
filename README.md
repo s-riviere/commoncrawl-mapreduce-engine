@@ -1,200 +1,183 @@
-# PLEASE DO NOT RUN THIS AT ALL THERE IS ACCESS ISSUE WE DONT HAVE RIGHT TO USE JUMP HOST
+# Distributed Computing Project — Challenge 1: Cluster Load Monitor
 
-# MapReduce — Challenge 1 : charge CPU distribuée
+Deploys a lightweight TCP server on up to 50 live school machines, then
+collects CPU load averages from every node and computes cluster-wide stats.
 
-Déploiement d'un serveur de charge CPU sur les machines des salles TP de
-Télécom Paris, collecte de la charge (`loadavg`) de chaque nœud depuis un
-client, et calcul de la charge moyenne du cluster.
+> **No jump host is used.** All SSH/SCP connections go **directly** from your
+> machine to the lab machines over campus Wi-Fi (same network).  
+> `ssh.enst.fr` is **not** involved and must **not** be used.
 
-## Objectif du TP
-
-- Fichier contenant les noms des machines `tp-*.enst.fr` (home NFS partagé).
-- Script de déploiement : **1 `scp`** pour copier le serveur,
-  **1 `ssh` par machine** pour le démarrer.
-- Le serveur écoute sur un port spécifique (choisi haut pour éviter les
-  conflits).
-- Chaque membre du groupe peut lancer le client depuis sa propre machine et
-  se connecter aux serveurs déployés.
-- Protocole : connexion TCP → le serveur envoie `load1 load5 load15` (mêmes
-  valeurs que `uptime`) → le client affiche la charge moyenne du cluster.
+---
 
 ## Architecture
 
 ```
-machines.txt                     (univers : tp-1a201-01 .. tp-1a201-40)
-      │
-      ▼
-  deploy.sh  ──scp──►  jump host (ssh.enst.fr)  :  upload server.py via NFS
-             ──ssh -J ssh.enst.fr──────────────► machines TP depuis votre poste,
-                                                  lance nohup server sur chaque machine
-      │
-      ▼
-machines_alive.txt               (liste dynamique des machines qui ont répondu)
-      │
-      ▼
-  client.py  ──TCP parallèle──►  tous les serveurs vivants
-                                 lit /proc/loadavg, affiche par nœud +
-                                 moyennes globales (1, 5, 15 min)
-      │
-      ▼
-  kill.sh    ──ssh -J ssh.enst.fr►  machines TP depuis votre poste,
-                                     tue chaque serveur par PID
-                                     (fichier ~/.server.pid)
-             ──ssh──►  jump host   : supprime ~/server.py du NFS
-             nettoie localement    : supprime machines_alive.txt
+                  ┌─────────────────────────────────────┐
+                  │  tp.telecom-paris.fr/ajax.php  (API) │
+                  └──────────────┬──────────────────────┘
+                                 │  get_machines.py
+                                 ▼
+                           machines.txt          ← 50 alive & free machines,
+                                 │                 regenerated each deploy
+                                 │
+              ┌──────────────────┼──────────────────────┐
+              │                  │                       │
+         deploy.sh           client.py              kill.sh
+              │                  │                       │
+     1× SCP to any host    parallel TCP            parallel SSH
+     (NFS: ~/server.py     to all hosts            pkill fired in bg,
+      visible everywhere)  in machines.txt         SSH exits first
+              │
+     N× SSH → nohup python3 ~/server.py <port> &
 ```
 
-Le **home NFS** est partagé entre toutes les machines : un seul `scp` rend
-`server.py` visible partout.
+**Why NFS for the upload?** Your home directory (`~/`) is mounted from a
+Network File System shared across all lab machines. One `scp` to any
+reachable host makes `server.py` instantly visible on all 50 machines —
+no per-machine upload needed.
 
-## Fichiers
+---
 
-| Fichier | Rôle |
-|---------|------|
-| `machines.txt` | Univers des machines (40 × `tp-1a201-XX.enst.fr`) |
-| `server.py` | Écoute TCP sur le port choisi, envoie `load1 load5 load15` |
-| `client.py` | Interroge en parallèle toutes les machines vivantes, affiche les stats |
-| `deploy.sh` | 1 SCP vers le home NFS + boucle SSH locale via `-J` ; génère `machines_alive.txt` |
-| `kill.sh` | Tue les serveurs via leur PID avec SSH local via `-J`, nettoie NFS et fichiers locaux |
+## Files
 
-## Pré-requis
+| File | Role |
+|---|---|
+| `get_machines.py` | Queries the school API, saves 50 alive & free hostnames to `machines.txt` |
+| `machines.txt` | Live machine list — **auto-generated**, never edit by hand |
+| `server.py` | Listens on the chosen port, replies with `load1 load5 load15` from `/proc/loadavg` |
+| `client.py` | Connects in parallel to all hosts in `machines.txt`, prints per-node loads and cluster averages |
+| `deploy.sh` | Phase 0: fetch machines. Phase 1: 1 SCP + parallel SSH bootstrap |
+| `kill.sh` | Sends `pkill` to every node in parallel, removes `~/server.py` from NFS, verifies |
 
-Remplacer `<login>` ci-dessous par votre login Télécom Paris (ex. `prenom-25`).
+There is **no** `machines_alive.txt`. The single source of truth is `machines.txt`,
+rebuilt from the API on every `./deploy.sh` run.
 
-1. **Compte Télécom Paris** actif.
-2. **Clé SSH locale** copiée sur `ssh.enst.fr` :
+---
+
+## Protocol
+
+One TCP connection = one response, then server closes the connection.
+
+```
+client  ──── TCP connect ────────► server
+client  ◄─── "l1 l5 l15\n" ─────  server  (floats, space-separated)
+             (connection closed)
+```
+
+- `l1 / l5 / l15`: 1-min, 5-min, 15-min load averages (same as `uptime`)
+- Source: `/proc/loadavg` on each lab machine
+- Default port: **54321** — use a high, unique port to avoid conflicts with other students
+
+---
+
+## Prerequisites
+
+1. **Campus Wi-Fi** (not eduroam — eduroam is on a different network from the lab machines).
+2. **SSH key** set up so you can reach lab machines without a password:
    ```bash
    ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
-   ssh-copy-id -i ~/.ssh/id_ed25519.pub <login>@ssh.enst.fr
+   # Then copy your public key to any lab machine once:
+   ssh-copy-id -i ~/.ssh/id_ed25519.pub <login>@tp-1a201-01.enst.fr
+   # The key lands in ~/.ssh/authorized_keys on NFS → works on every machine
    ```
-3. **Config SSH locale** (`~/.ssh/config`) :
-   ```
-   Host telecom
-       HostName ssh.enst.fr
-       User <login>
+3. **Python 3** available locally (for `get_machines.py` and `client.py`).
+4. No jump host config needed — direct SSH works from campus Wi-Fi.
 
-   Host tp-*
-       ProxyJump telecom
-       User <login>
-   ```
-4. **Mettre à jour les scripts** : remplacer la valeur de `REMOTE_USER` en
-   tête de `deploy.sh` et `kill.sh` par votre login.
+---
 
-> Une seule personne du groupe a besoin de faire le déploiement ; les autres
-> membres n'ont qu'à récupérer `client.py` et `machines_alive.txt` pour
-> interroger le cluster.
+## Usage
 
-## Utilisation
+### Deploy
 
-### Déployer
 ```bash
-./deploy.sh           # port 54321 par défaut
-./deploy.sh 54555     # port personnalisé
+./deploy.sh 60012          # pick a port high enough to avoid collisions
 ```
 
-Sortie typique :
+Typical output:
 ```
-[1/2] Uploading server.py via NFS...
-[2/2] Starting server on each machine from this computer...
-  [OK]  tp-1a201-01.enst.fr
+Phase 0: queries API → saves 50 machines to machines.txt
+Phase 1: 1 SCP upload, then parallel SSH nohup launch
+  [STARTED] -> tp-1a201-08.enst.fr
+  [STARTED] -> tp-1a201-09.enst.fr
   ...
-  [--]  tp-1a201-35.enst.fr       <- machine éteinte
-  ...
-  --> 39 / 40 machines deployed.
-Alive: 39 / 40  -->  machines_alive.txt
+  [FAILED]  -> tp-1a207-31.enst.fr   ← unreachable, ignore
 ```
 
-### Interroger le cluster (chaque membre du groupe depuis sa machine)
+### Check the cluster (anyone on campus Wi-Fi with machines.txt)
+
 ```bash
-python3 client.py              # utilise machines_alive.txt + port 54321
-python3 client.py 54555        # port personnalisé
+python3 client.py 60012
 ```
 
-Sortie :
 ```
-Connecting to 39 machines on port 54321...
-
-  tp-1a201-01.enst.fr         load: 2.00  2.00  2.00
-  tp-1a201-02.enst.fr         load: 0.00  0.02  0.00
+  tp-1a201-08.enst.fr     load: 0.32  0.27  0.13
+  tp-1a201-09.enst.fr     load: 0.44  0.19  0.10
   ...
-=======================================================
-  Nodes responded: 39/39
-  Avg load  1 min : 0.0674
-  Avg load  5 min : 0.0700
-  Avg load 15 min : 0.0623
-=======================================================
+  tp-1a207-31.enst.fr     UNREACHABLE
+  ═══════════════════════════════════════════════════
+  Nodes responded: 48/50
+  Avg cluster load  1 min : 0.2006
+  Avg cluster load  5 min : 0.1644
+  Avg cluster load 15 min : 0.1329
+  ═══════════════════════════════════════════════════
 ```
 
-Pour que les deux autres membres puissent interroger sans déployer, il leur
-suffit d'avoir une copie de `client.py` et de `machines_alive.txt`.
+Other group members only need `client.py` + a copy of `machines.txt`
+to query the cluster — no deployment step required on their side.
 
-### Arrêter et nettoyer
+### Kill and clean
+
 ```bash
-./kill.sh
+./kill.sh 60012
 ```
 
-- Tue les serveurs en utilisant le PID enregistré dans `~/.server.pid`
-  (pas de `pkill -f`, qui risquerait de tuer des processus d'autres étudiants
-  ou le shell SSH distant).
-- Supprime `~/server.py` du home NFS (donc de toutes les machines).
-- Supprime `machines_alive.txt` localement.
+- Sends `pkill -9` to every node **in parallel**, using a fire-and-forget
+  pattern (pkill is backgrounded on the remote machine so SSH exits cleanly
+  before the process is killed — this avoids false `[FAILED]` reports).
+- Removes `~/server.py` from NFS.
+- Waits 2 seconds then runs an automatic verification via `client.py`
+  to confirm 0 nodes are still responding.
 
-## Protocole
+---
 
-Très simple : 1 connexion TCP = 1 réponse.
+## Design notes
 
-```
-client  ─── TCP connect ────► serveur
-client  ◄── "l1 l5 l15\n" ─── serveur
-        (connexion fermée côté serveur)
-```
+**Direct SSH, no jump host.**  
+Campus Wi-Fi puts your machine in the same L3 network as `tp-*.enst.fr`.
+Direct SSH works. Using `ssh.enst.fr` as a ProxyJump is explicitly
+**forbidden** for this project.
 
-- `l1`, `l5`, `l15` : floats, charge moyenne sur 1 / 5 / 15 minutes
-  (lus depuis `/proc/loadavg`, exactement comme `uptime`).
-- Port par défaut : **54321** (plage haute, peu susceptible de conflit).
+**One SCP is enough.**  
+NFS makes `~/server.py` visible on every lab machine the moment it lands
+on any one of them.
 
-## Choix techniques / bonnes pratiques
+**NFS vs local disk.**  
+For this challenge the server writes nothing — it only reads `/proc/loadavg`.
+Local disk will matter in the next challenge (MapReduce), where map output
+must be written to `/tmp` (node-local) rather than `~/` (NFS), matching
+Figure 1 of the Dean & Ghemawat paper.
 
-- **Port élevé** (`54321`) : pas de conflit avec services système (< 1024) ni
-  ports classiques.
-- **`SO_REUSEADDR`** : permet de relancer le serveur rapidement après kill.
-- **IPv6 dual-stack** : les machines ENST ont des adresses IPv6, le serveur
-  bind `::` et le socket accepte aussi IPv4.
-- **Fichier PID** (`~/.server.pid`) : `kill.sh` utilise `xargs kill` au lieu de
-  `pkill -f`, qui serait dangereux (risque de tuer le shell distant ou
-  des processus homonymes d'autres utilisateurs).
-- **Déploiement séquentiel depuis votre poste via `ProxyJump`** : toutes les
-  connexions SSH sont initiées localement, et `ssh.enst.fr` ne fait que relayer
-  le trafic vers les machines TP. La boucle reste séquentielle pour éviter de
-  lancer 40 connexions en parallèle.
-- **Liste dynamique** : `machines_alive.txt` est reconstruit à chaque
-  `deploy.sh` — pas de liste obsolète.
-- **`BatchMode=yes` + `ConnectTimeout`** : les scripts échouent vite sur une
-  machine injoignable au lieu de bloquer.
-- **Côté client, `ThreadPoolExecutor(max_workers=50)`** : interroge les 40
-  serveurs en ~5 s, même si certains sont lents.
-- **Cleanup robuste** : `trap` sur `EXIT`, `atexit` + handler `SIGTERM` côté
-  serveur pour supprimer le fichier PID.
+**Port choice.**  
+Pick a port above 10000 and coordinate with your group so you don't collide
+with classmates. The port is passed as a CLI argument to all three scripts.
 
-## Respect de l'infrastructure partagée
+**`SO_REUSEADDR` on the server.**  
+Allows the server to restart on the same port immediately after a kill,
+without waiting for the OS `TIME_WAIT` timeout.
 
-Conformément aux consignes Télécom Paris (heures non ouvrées pour calculs
-lourds) :
+**Fire-and-forget kill pattern.**  
+`pkill … & exit 0` on the remote side: pkill is forked in background,
+SSH session exits with 0 before the kill happens. This gives reliable
+`[CLEANED]` reports even on flaky campus Wi-Fi.
 
-- Le serveur est **minuscule** (~40 lignes Python, quasi idle). Il ne consomme
-  rien : juste un `accept()` bloquant.
-- **Pas d'orchestrateur central** ni de nœud maître — simple pattern
-  client/serveur sans état.
-- **Cleanup systématique** via `./kill.sh` : ne laisse aucun processus
-  orphelin ni fichier sur les machines.
-- **Limite raisonnable** (40 machines d'une seule salle) ; pas de scan agressif
-  du parc.
+---
 
-## Limitations connues
+## Known limitations
 
-- Fixé à la salle `1a201` (40 machines). Étendre à 100 machines = ajouter
-  d'autres salles dans `machines.txt`.
-- Serveur mono-thread : `accept()` séquentiel suffit pour le protocole
-  (3 membres × 40 connexions courtes = rien du tout).
-- Pas de chiffrement applicatif : la charge CPU n'est pas sensible, et le
-  trafic transite déjà sur le réseau interne ENST.
+- The API sometimes returns fewer than 100 machines (currently capped at 50
+  alive & free). This is an API/infrastructure constraint, not a script bug.
+- A few machines in room `1a207` and `1a222` are persistently unreachable
+  at the network level — `[FAILED]` / `UNREACHABLE` on those is expected.
+- Server is single-threaded (`accept()` loop). Sufficient for the protocol
+  (one short response per connection), but not suitable for long-lived
+  or concurrent requests.

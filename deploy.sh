@@ -1,66 +1,102 @@
 #!/bin/bash
-# Deploy load server on all reachable machines.
-# Strategy:
-#   1. ONE scp uploads server.py to the shared NFS home.
-#   2. This computer opens one sequential ssh hop per lab machine via
-#      the jump host, so all SSH sessions originate locally.
+# Robust parallel deployment for WSL2 over Campus Wi-Fi.
+# Uploads server.py once via NFS (SCP to one machine), then SSH-starts
+# one server process per machine in machines.txt.
+#
 # Usage: ./deploy.sh [port]
 
 set -euo pipefail
 
-PORT=${1:-54321}
-REMOTE_USER="kabil-25"
-JUMP="ssh.enst.fr"
-SERVER="server.py"
-ALL_MACHINES="machines.txt"
-ALIVE_FILE="machines_alive.txt"
-L_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes -o LogLevel=ERROR"
+PORT="${1:-54321}"
+MACHINES_FILE="machines.txt"
 
-if [[ ! -f "$ALL_MACHINES" ]]; then
-    echo "error: $ALL_MACHINES not found."
+# -4  : force IPv4 — avoids WSL2 IPv6 resolution bugs
+# -n  : no stdin (essential when running in a background subshell)
+SSH_OPTS="-4 -n \
+  -o StrictHostKeyChecking=no \
+  -o ConnectTimeout=4 \
+  -o BatchMode=yes \
+  -o LogLevel=ERROR \
+  -o ServerAliveInterval=3 \
+  -o ServerAliveCountMax=2"
+
+# ── Phase 0: fetch alive machines ─────────────────────────────────────────────
+echo "================================================="
+echo " Phase 0: Fetching Alive Machines from API"
+echo "================================================="
+python3 get_machines.py
+
+if [[ ! -f "$MACHINES_FILE" ]]; then
+    echo "Error: $MACHINES_FILE not created by get_machines.py."
     exit 1
 fi
 
-echo "=========================================="
-echo "  Load Server Deployment  (port $PORT)"
-echo "=========================================="
-echo ""
-echo "[1/2] Uploading $SERVER via NFS..."
-# shellcheck disable=SC2086
-scp -q $L_OPTS "$SERVER" "${REMOTE_USER}@${JUMP}:"
-echo "      Done."
-echo ""
-echo "[2/2] Starting server on each machine from this computer..."
+TOTAL=$(wc -l < "$MACHINES_FILE")
+echo "  → $TOTAL machines loaded from $MACHINES_FILE"
 
-ROPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=6 -o BatchMode=yes -o LogLevel=ERROR"
-JUMP_SPEC="${REMOTE_USER}@${JUMP}"
-: > "$ALIVE_FILE"
-count=0
-total=0
+# ── Phase 1: NFS upload (one SCP is enough — home dir is shared) ──────────────
+echo ""
+echo "================================================="
+echo " Phase 1: Parallel Deployment"
+echo "================================================="
+
+echo "[1/2] Syncing server.py to NFS home..."
+UPLOADED=0
 
 while IFS= read -r host; do
     [[ -z "$host" ]] && continue
-    total=$((total + 1))
-    result=$(ssh -n $ROPTS -J "$JUMP_SPEC" "${REMOTE_USER}@${host}" \
-        "nohup python3 ~/server.py ${PORT} >/dev/null 2>&1 & echo ok" \
-        2>/dev/null || true)
-    if [[ "$result" == "ok" ]]; then
-        echo "  [OK]  $host"
-        echo "$host" >> "$ALIVE_FILE"
-        count=$((count + 1))
-    else
-        echo "  [--]  $host"
+    printf "      Trying %-35s ... " "$host"
+    # Hard 10-second wall-clock limit to avoid hanging on ghost connections
+    if timeout 10 scp -4 \
+        -o StrictHostKeyChecking=no \
+        -o ConnectTimeout=4 \
+        -o BatchMode=yes \
+        -o LogLevel=ERROR \
+        "server.py" "${host}:~/server.py" 2>/dev/null; then
+        echo "[OK]"
+        UPLOADED=1
+        break
     fi
-done < "$ALL_MACHINES"
+    echo "[timeout]"
+done < "$MACHINES_FILE"
 
-echo ""
-echo "  --> $count / $total machines deployed."
+if [[ $UPLOADED -eq 0 ]]; then
+    echo ""
+    echo "FATAL: Could not upload server.py — all machines are unreachable."
+    exit 1
+fi
 
-ALIVE_COUNT=$(wc -l < "$ALIVE_FILE")
-TOTAL=$(wc -l < "$ALL_MACHINES")
-echo ""
-echo "=========================================="
-echo "  Alive: $ALIVE_COUNT / $TOTAL  -->  $ALIVE_FILE"
-echo "=========================================="
-echo ""
-echo "Run client:  python3 client.py $PORT $ALIVE_FILE"
+# ── Phase 2: parallel SSH bootstrap ───────────────────────────────────────────
+echo "[2/2] Bootstrapping cluster processes..."
+
+STARTED=0
+FAILED=0
+declare -a PIDS=()
+
+while IFS= read -r host; do
+    [[ -z "$host" ]] && continue
+
+    (
+        # 'nohup … &' detaches the server from this SSH session.
+        # We immediately exit the SSH session after the process is spawned —
+        # that is why we need 'echo ok': it confirms the fork happened.
+        if timeout 6 ssh $SSH_OPTS "$host" \
+            "nohup python3 ~/server.py ${PORT} >/dev/null 2>&1 & echo ok" \
+            2>/dev/null | grep -q "^ok$"; then
+            echo "  [STARTED] -> $host"
+        else
+            echo "  [FAILED]  -> $host"
+        fi
+    ) &
+    PIDS+=($!)
+done < "$MACHINES_FILE"
+
+# Wait for every background subshell
+for pid in "${PIDS[@]}"; do
+    wait "$pid"
+done
+
+echo "================================================="
+echo " Deployment complete."
+echo " Verify: python3 client.py ${PORT}"
+echo "================================================="

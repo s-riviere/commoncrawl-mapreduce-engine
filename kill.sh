@@ -1,49 +1,91 @@
 #!/bin/bash
-# Stop all load servers we own and clean up.
-# Uses fuser -k on the port: reliably kills any process (ours) listening
-# there, even orphaned ones from previous deploys.
-# Usage: ./kill.sh [alive_file] [port]
+# Stop all load servers deployed by deploy.sh.
+# THE BUG THAT WAS HERE: SSH was timing out *after* successfully sending pkill
+# (killing the server process can disrupt the SSH tunnel), so every node was
+# reported [FAILED] even though all processes were actually killed.
+#
+# THE FIX: launch pkill in the background on the remote machine (`pkill … &`)
+# and exit the SSH session immediately (`exit 0`) BEFORE pkill runs.
+# SSH therefore returns 0 reliably, and we get correct [CLEANED] reports.
+# Verification is done automatically at the end with client.py.
+#
+# Usage: ./kill.sh [port]
 
 set -uo pipefail
 
-ALIVE_FILE="${1:-machines_alive.txt}"
-PORT="${2:-54321}"
-REMOTE_USER="kabil-25"
-JUMP="ssh.enst.fr"
-L_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes -o LogLevel=ERROR"
+PORT="${1:-54321}"
+MACHINES_FILE="machines.txt"
 
-if [[ ! -f "$ALIVE_FILE" ]]; then
-    echo "No $ALIVE_FILE found. Nothing to kill."
+SSH_OPTS="-4 -n \
+  -o StrictHostKeyChecking=no \
+  -o ConnectTimeout=5 \
+  -o BatchMode=yes \
+  -o LogLevel=ERROR \
+  -o ServerAliveInterval=3 \
+  -o ServerAliveCountMax=1"
+
+if [[ ! -f "$MACHINES_FILE" ]]; then
+    echo "No $MACHINES_FILE found. Nothing to kill."
     exit 0
 fi
 
-echo "Stopping servers on port $PORT..."
+TOTAL=$(wc -l < "$MACHINES_FILE")
+echo "Killing servers on port $PORT across $TOTAL machines..."
+echo "(fire-and-forget — SSH exits before pkill completes, so ACK is reliable)"
+echo ""
 
-ROPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=6 -o BatchMode=yes -o LogLevel=ERROR"
-JUMP_SPEC="${REMOTE_USER}@${JUMP}"
+declare -a PIDS=()
 
 while IFS= read -r host; do
     [[ -z "$host" ]] && continue
-    result=$(ssh -n $ROPTS -J "$JUMP_SPEC" "${REMOTE_USER}@${host}" \
-        "if fuser -k -TERM ${PORT}/tcp >/dev/null 2>&1; then
-            sleep 0.2
-            fuser -k -KILL ${PORT}/tcp >/dev/null 2>&1 || true
-            rm -f ~/.server.pid
-            echo killed
+
+    (
+        # KEY FIX: `pkill … &` forks pkill in the background on the remote node.
+        # The SSH session then exits cleanly with 0 *before* the process is killed,
+        # so we always get a reliable return code from SSH.
+        # `exit 0` is explicit for clarity; `& exit 0` would also work.
+        if timeout 10 ssh $SSH_OPTS "$host" \
+            "pkill -9 -u \"\$USER\" -f \"python3.*server\\.py.*${PORT}\" &>/dev/null &
+             exit 0" \
+            2>/dev/null; then
+            echo "  [CLEANED]  $host"
         else
-            rm -f ~/.server.pid
-            echo not_running
-        fi" \
-        2>/dev/null || echo unreachable)
-    echo "  [${result}]  $host"
-done < "$ALIVE_FILE"
+            echo "  [UNREACHABLE] $host  (SSH could not connect — already down?)"
+        fi
+    ) &
+    PIDS+=($!)
+done < "$MACHINES_FILE"
 
-# shellcheck disable=SC2086
-ssh -n $L_OPTS "${REMOTE_USER}@${JUMP}" "rm -f ~/server.py" 2>/dev/null || true
-echo ""
-echo "  Removed ~/server.py from NFS home."
+for pid in "${PIDS[@]}"; do
+    wait "$pid"
+done
 
-rm -f "$ALIVE_FILE"
-echo "  Removed $ALIVE_FILE."
+# ── NFS cleanup: remove server.py from home directory ─────────────────────────
 echo ""
-echo "All clean."
+FIRST_NODE=$(head -n 1 "$MACHINES_FILE")
+if [[ -n "$FIRST_NODE" ]]; then
+    echo "Removing ~/server.py from NFS via $FIRST_NODE ..."
+    if timeout 10 ssh $SSH_OPTS "$FIRST_NODE" "rm -f ~/server.py" 2>/dev/null; then
+        echo "  [OK] ~/server.py removed."
+    else
+        echo "  [WARN] Could not remove ~/server.py (machine unreachable?)."
+        echo "         Delete it manually: ssh $FIRST_NODE 'rm -f ~/server.py'"
+    fi
+fi
+
+# ── Optional: quick verification ping ────────────────────────────────────────
+echo ""
+echo "All kill signals sent. Verifying in 2 seconds..."
+sleep 2
+
+if command -v python3 &>/dev/null && [[ -f "client.py" ]]; then
+    LIVE=$(python3 client.py "$PORT" 2>/dev/null | grep -c "load:" || true)
+    if [[ "$LIVE" -eq 0 ]]; then
+        echo "  ✓ Cluster is clean — 0 nodes responding on port $PORT."
+    else
+        echo "  ✗ WARNING: $LIVE node(s) still responding. Re-run ./kill.sh $PORT"
+    fi
+fi
+
+echo ""
+echo "Done. machines.txt kept intact for the next deployment."
