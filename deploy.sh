@@ -13,13 +13,16 @@ REMOTE_USER="rdeloye-24"
 REMOTE_USER="kabil-25"
 JUMP="ssh.enst.fr"
 SERVER="server.py"
-ALL_MACHINES="machines.txt"
 ALIVE_FILE="machines_alive.txt"
 REMOTE_DIR="/tmp/${REMOTE_USER}/slr207-project"
 REMOTE_SERVER_PATH="${REMOTE_DIR}/${SERVER}"
 
-if [[ ! -f "$ALL_MACHINES" ]]; then
-    echo "error: $ALL_MACHINES not found."
+# Generate the list of alive machines
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+bash "$SCRIPT_DIR/gen_machines.sh" "$ALIVE_FILE"
+
+if [[ ! -s "$ALIVE_FILE" ]]; then
+    echo "error: no alive machines found."
     exit 1
 fi
 
@@ -34,7 +37,8 @@ echo "[2/2] Starting server on each machine from this computer..."
 ROPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=6 -o BatchMode=yes -o LogLevel=ERROR"
 JUMP_SPEC="${REMOTE_USER}@${JUMP}"
 ENCODED=$(base64 -w 0 < "$SERVER")
-: > "$ALIVE_FILE"
+CANDIDATES="$ALIVE_FILE"
+: > "${ALIVE_FILE}.tmp"
 count=0
 total=0
 
@@ -47,21 +51,21 @@ while IFS= read -r host; do
         2>&1 || true)
     if [[ "$result" == "ok" ]]; then
         echo "  [OK]  $host"
-        echo "$host" >> "$ALIVE_FILE"
+        echo "$host" >> "${ALIVE_FILE}.tmp"
         count=$((count + 1))
     else
         echo "  [--]  $host"
     fi
-done < "$ALL_MACHINES"
+done < "$CANDIDATES"
+
+mv "${ALIVE_FILE}.tmp" "$ALIVE_FILE"
 
 echo ""
 echo "  --> $count / $total machines deployed."
 
-ALIVE_COUNT=$(wc -l < "$ALIVE_FILE")
-TOTAL=$(wc -l < "$ALL_MACHINES")
 echo ""
 echo "=========================================="
-echo "  Alive: $ALIVE_COUNT / $TOTAL  -->  $ALIVE_FILE"
+echo "  Alive: $count / $total  -->  $ALIVE_FILE"
 echo "=========================================="
 echo ""
 echo "Run client:  python3 client.py $PORT $ALIVE_FILE"
