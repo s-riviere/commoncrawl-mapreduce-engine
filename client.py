@@ -47,14 +47,15 @@ SCP_OPTS = [
 # ── NFS sync ──────────────────────────────────────────────────────────────────
 def sync_machines_from_nfs() -> None:
     """
-    Fetch ~/machines.txt from NFS by trying hosts until one responds.
+    Fetch machines.txt from /tmp on a lab machine.
 
     Strategy:
       1. If a SYNC_HINT host was given (printed by deploy.sh), try it first.
-      2. Fall back to every host in the local machines.txt (which may be stale,
-         but NFS is shared — any reachable lab machine holds the same file).
+      2. Fall back to every host in the local machines.txt (which may be stale).
       3. If nothing works, warn and proceed with whatever is on disk.
     """
+    remote_dir = '/tmp/slr207-group1'
+
     # Build candidate list: hint first, then whatever is in local file
     candidates: list[str] = []
     if SYNC_HINT:
@@ -74,12 +75,12 @@ def sync_machines_from_nfs() -> None:
         print('       Ask the deploy person for a --sync <host> argument.')
         return
 
-    print(f'[SYNC] Fetching machines.txt from NFS '
+    print(f'[SYNC] Fetching machines.txt from /tmp on lab machine '
           f'(trying up to {len(candidates)} host(s))...')
 
     for host in candidates:
         result = subprocess.run(
-            ['scp'] + SCP_OPTS + [f'{host}:~/machines.txt', MACHINES_FILE],
+            ['scp'] + SCP_OPTS + [f'{host}:{remote_dir}/machines.txt', MACHINES_FILE],
             capture_output=True,
         )
         if result.returncode == 0:

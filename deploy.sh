@@ -1,6 +1,6 @@
 #!/bin/bash
 # Robust parallel deployment for WSL2 over Campus Wi-Fi.
-# Uploads server.py AND machines.txt once via NFS (SCP to one machine),
+# Uploads server.py AND machines.txt to /tmp on one lab machine,
 # then SSH-starts one server process per machine in machines.txt.
 #
 # After deployment, other team members sync their local machines.txt by
@@ -43,21 +43,27 @@ echo "================================================="
 echo " Phase 1: Parallel Deployment"
 echo "================================================="
 
-echo "[1/2] Syncing server.py + machines.txt to NFS home..."
+echo "[1/2] Syncing server.py + machines.txt to local disk on a lab machine..."
 UPLOADED=0
 NFS_HOST=""
+REMOTE_DIR="/tmp/slr207-group1"
 
 while IFS= read -r host; do
     [[ -z "$host" ]] && continue
     printf "      Trying %-35s ... " "$host"
-    # Upload both server.py and machines.txt in one scp call.
-    # machines.txt on NFS lets team members sync via --sync flag in client.py.
-    if timeout 10 scp -4 \
+    # Create remote dir, then upload both files to /tmp on that machine.
+    if timeout 10 ssh -4 \
         -o StrictHostKeyChecking=no \
         -o ConnectTimeout=4 \
         -o BatchMode=yes \
         -o LogLevel=ERROR \
-        "server.py" "machines.txt" "${host}:~/" 2>/dev/null; then
+        "$host" "mkdir -p $REMOTE_DIR" 2>/dev/null && \
+       timeout 10 scp -4 \
+        -o StrictHostKeyChecking=no \
+        -o ConnectTimeout=4 \
+        -o BatchMode=yes \
+        -o LogLevel=ERROR \
+        "server.py" "machines.txt" "${host}:${REMOTE_DIR}/" 2>/dev/null; then
         echo "[OK]"
         UPLOADED=1
         NFS_HOST="$host"
@@ -84,7 +90,7 @@ while IFS= read -r host; do
         # 'nohup … &' detaches the server from this SSH session.
         # 'echo ok' confirms the fork happened before SSH exits.
         if timeout 6 ssh $SSH_OPTS "$host" \
-            "nohup python3 ~/server.py ${PORT} >/dev/null 2>&1 & echo ok" \
+            "mkdir -p $REMOTE_DIR && cp ${REMOTE_DIR}/server.py ${REMOTE_DIR}/server_run.py 2>/dev/null; nohup python3 ${REMOTE_DIR}/server.py ${PORT} >/dev/null 2>&1 & echo ok" \
             2>/dev/null | grep -q "^ok$"; then
             echo "  [STARTED] -> $host"
         else
@@ -100,6 +106,8 @@ done
 
 echo "================================================="
 echo " Deployment complete."
+echo ""
+echo " machines.txt stored on: ${NFS_HOST}:${REMOTE_DIR}/"
 echo ""
 echo " Verify:      python3 client.py ${PORT}"
 echo " Team sync:   python3 client.py ${PORT} --sync ${NFS_HOST}"
