@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 '''
 Load server: accepts TCP connections and sends CPU load averages (1/5/15 min).
-Writes its PID to ~/.server.pid for clean shutdown by kill.sh.
+Writes its PID next to the deployed script for clean shutdown by kill.sh.
 On startup, kills any previous instance whose PID is recorded in the file.
 Usage: python3 server.py [port]
 '''
@@ -13,7 +13,8 @@ import sys
 import time
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 54321
-PID_FILE = os.path.expanduser('~/.server.pid')
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PID_FILE = os.path.join(BASE_DIR, '.server.pid')
 
 
 def cleanup():

@@ -1,5 +1,3 @@
-# PLEASE DO NOT RUN THIS AT ALL THERE IS ACCESS ISSUE WE DONT HAVE RIGHT TO USE JUMP HOST
-
 # MapReduce — Challenge 1 : charge CPU distribuée
 
 Déploiement d'un serveur de charge CPU sur les machines des salles TP de
@@ -8,9 +6,9 @@ client, et calcul de la charge moyenne du cluster.
 
 ## Objectif du TP
 
-- Fichier contenant les noms des machines `tp-*.enst.fr` (home NFS partagé).
-- Script de déploiement : **1 `scp`** pour copier le serveur,
-  **1 `ssh` par machine** pour le démarrer.
+- Fichier contenant les noms des machines `tp-*.enst.fr`.
+- Script de déploiement : **1 `ssh -J` par machine** pour copier le serveur sur
+  le disque local, puis **1 `ssh` par machine** pour le démarrer.
 - Le serveur écoute sur un port spécifique (choisi haut pour éviter les
   conflits).
 - Chaque membre du groupe peut lancer le client depuis sa propre machine et
@@ -24,9 +22,10 @@ client, et calcul de la charge moyenne du cluster.
 machines.txt                     (univers : tp-1a201-01 .. tp-1a201-40)
       │
       ▼
-  deploy.sh  ──scp──►  jump host (ssh.enst.fr)  :  upload server.py via NFS
+  deploy.sh  ──ssh -J ssh.enst.fr──────────────► machines TP depuis votre poste,
+                                                  copie server.py vers /tmp/<login>/slr207-project
              ──ssh -J ssh.enst.fr──────────────► machines TP depuis votre poste,
-                                                  lance nohup server sur chaque machine
+                                                  lance nohup server depuis le disque local
       │
       ▼
 machines_alive.txt               (liste dynamique des machines qui ont répondu)
@@ -39,13 +38,12 @@ machines_alive.txt               (liste dynamique des machines qui ont répondu)
       ▼
   kill.sh    ──ssh -J ssh.enst.fr►  machines TP depuis votre poste,
                                      tue chaque serveur par PID
-                                     (fichier ~/.server.pid)
-             ──ssh──►  jump host   : supprime ~/server.py du NFS
+                                     (fichier /tmp/<login>/slr207-project/.server.pid)
              nettoie localement    : supprime machines_alive.txt
 ```
 
-Le **home NFS** est partagé entre toutes les machines : un seul `scp` rend
-`server.py` visible partout.
+Chaque machine reçoit sa propre copie de `server.py` dans
+`/tmp/<login>/slr207-project`, ce qui évite toute dépendance à un home NFS.
 
 ## Fichiers
 
@@ -54,8 +52,8 @@ Le **home NFS** est partagé entre toutes les machines : un seul `scp` rend
 | `machines.txt` | Univers des machines (40 × `tp-1a201-XX.enst.fr`) |
 | `server.py` | Écoute TCP sur le port choisi, envoie `load1 load5 load15` |
 | `client.py` | Interroge en parallèle toutes les machines vivantes, affiche les stats |
-| `deploy.sh` | 1 SCP vers le home NFS + boucle SSH locale via `-J` ; génère `machines_alive.txt` |
-| `kill.sh` | Tue les serveurs via leur PID avec SSH local via `-J`, nettoie NFS et fichiers locaux |
+| `deploy.sh` | Copie `server.py` sur le disque local de chaque machine via `ssh -J`, puis le lance via `ssh -J` ; génère `machines_alive.txt` |
+| `kill.sh` | Tue les serveurs via leur PID avec SSH local via `-J`, nettoie `/tmp/<login>/slr207-project` et les fichiers locaux |
 
 ## Pré-requis
 
@@ -94,7 +92,7 @@ Remplacer `<login>` ci-dessous par votre login Télécom Paris (ex. `prenom-25`)
 
 Sortie typique :
 ```
-[1/2] Uploading server.py via NFS...
+[1/2] Copying server.py to each machine's local disk...
 [2/2] Starting server on each machine from this computer...
   [OK]  tp-1a201-01.enst.fr
   ...
@@ -133,10 +131,12 @@ suffit d'avoir une copie de `client.py` et de `machines_alive.txt`.
 ./kill.sh
 ```
 
-- Tue les serveurs en utilisant le PID enregistré dans `~/.server.pid`
+- Tue les serveurs en utilisant le PID enregistré dans
+  `/tmp/<login>/slr207-project/.server.pid`
   (pas de `pkill -f`, qui risquerait de tuer des processus d'autres étudiants
   ou le shell SSH distant).
-- Supprime `~/server.py` du home NFS (donc de toutes les machines).
+- Supprime `server.py` et `.server.pid` de `/tmp/<login>/slr207-project` sur
+  chaque machine.
 - Supprime `machines_alive.txt` localement.
 
 ## Protocole
@@ -160,9 +160,9 @@ client  ◄── "l1 l5 l15\n" ─── serveur
 - **`SO_REUSEADDR`** : permet de relancer le serveur rapidement après kill.
 - **IPv6 dual-stack** : les machines ENST ont des adresses IPv6, le serveur
   bind `::` et le socket accepte aussi IPv4.
-- **Fichier PID** (`~/.server.pid`) : `kill.sh` utilise `xargs kill` au lieu de
-  `pkill -f`, qui serait dangereux (risque de tuer le shell distant ou
-  des processus homonymes d'autres utilisateurs).
+- **Fichier PID** (`/tmp/<login>/slr207-project/.server.pid`) : `kill.sh`
+  utilise `fuser -k` sur le port puis supprime le fichier PID, ce qui évite
+  de dépendre du home NFS.
 - **Déploiement séquentiel depuis votre poste via `ProxyJump`** : toutes les
   connexions SSH sont initiées localement, et `ssh.enst.fr` ne fait que relayer
   le trafic vers les machines TP. La boucle reste séquentielle pour éviter de
