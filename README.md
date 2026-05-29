@@ -22,10 +22,9 @@ client, et calcul de la charge moyenne du cluster.
 machines.txt                     (univers : tp-1a201-01 .. tp-1a201-40)
       │
       ▼
-  deploy.sh  ──scp──►  jump host (ssh.enst.fr)  :  upload server.py + machines.txt via NFS
-             ──ssh──►                            :  boucle séquentielle, ssh direct
-                                                    vers chaque machine, lance nohup server
-             ◄──scp──                            :  télécharge machines_alive.txt
+  deploy.sh  ──scp──►  jump host (ssh.enst.fr)  :  upload server.py via NFS
+             ──ssh -J ssh.enst.fr──────────────► machines TP depuis votre poste,
+                                                  lance nohup server sur chaque machine
       │
       ▼
 machines_alive.txt               (liste dynamique des machines qui ont répondu)
@@ -36,10 +35,11 @@ machines_alive.txt               (liste dynamique des machines qui ont répondu)
                                  moyennes globales (1, 5, 15 min)
       │
       ▼
-  kill.sh    ──ssh──►  jump host  :  boucle, tue chaque serveur par PID
+  kill.sh    ──ssh -J ssh.enst.fr►  machines TP depuis votre poste,
+                                     tue chaque serveur par PID
                                      (fichier ~/.server.pid)
-                                     supprime ~/server.py du NFS
-             nettoie localement : supprime machines_alive.txt
+             ──ssh──►  jump host   : supprime ~/server.py du NFS
+             nettoie localement    : supprime machines_alive.txt
 ```
 
 Le **home NFS** est partagé entre toutes les machines : un seul `scp` rend
@@ -52,8 +52,8 @@ Le **home NFS** est partagé entre toutes les machines : un seul `scp` rend
 | `machines.txt` | Univers des machines (40 × `tp-1a201-XX.enst.fr`) |
 | `server.py` | Écoute TCP sur le port choisi, envoie `load1 load5 load15` |
 | `client.py` | Interroge en parallèle toutes les machines vivantes, affiche les stats |
-| `deploy.sh` | 1 SCP + boucle SSH depuis le jump host ; génère `machines_alive.txt` |
-| `kill.sh` | Tue les serveurs via leur PID, nettoie NFS et fichiers locaux |
+| `deploy.sh` | 1 SCP vers le home NFS + boucle SSH locale via `-J` ; génère `machines_alive.txt` |
+| `kill.sh` | Tue les serveurs via leur PID avec SSH local via `-J`, nettoie NFS et fichiers locaux |
 
 ## Pré-requis
 
@@ -65,16 +65,7 @@ Remplacer `<login>` ci-dessous par votre login Télécom Paris (ex. `prenom-25`)
    ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
    ssh-copy-id -i ~/.ssh/id_ed25519.pub <login>@ssh.enst.fr
    ```
-3. **Clé SSH sur le jump host** (une fois), pour qu'il puisse se connecter
-   aux machines de TP via le home NFS partagé :
-   ```bash
-   ssh <login>@ssh.enst.fr
-   ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
-   cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
-   chmod 600 ~/.ssh/authorized_keys
-   exit
-   ```
-4. **Config SSH locale** (`~/.ssh/config`) :
+3. **Config SSH locale** (`~/.ssh/config`) :
    ```
    Host telecom
        HostName ssh.enst.fr
@@ -84,7 +75,7 @@ Remplacer `<login>` ci-dessous par votre login Télécom Paris (ex. `prenom-25`)
        ProxyJump telecom
        User <login>
    ```
-5. **Mettre à jour les scripts** : remplacer la valeur de `REMOTE_USER` en
+4. **Mettre à jour les scripts** : remplacer la valeur de `REMOTE_USER` en
    tête de `deploy.sh` et `kill.sh` par votre login.
 
 > Une seule personne du groupe a besoin de faire le déploiement ; les autres
@@ -101,8 +92,8 @@ Remplacer `<login>` ci-dessous par votre login Télécom Paris (ex. `prenom-25`)
 
 Sortie typique :
 ```
-[1/2] Uploading server.py and machines.txt via NFS...
-[2/2] Starting server on each machine from jump host...
+[1/2] Uploading server.py via NFS...
+[2/2] Starting server on each machine from this computer...
   [OK]  tp-1a201-01.enst.fr
   ...
   [--]  tp-1a201-35.enst.fr       <- machine éteinte
@@ -170,10 +161,10 @@ client  ◄── "l1 l5 l15\n" ─── serveur
 - **Fichier PID** (`~/.server.pid`) : `kill.sh` utilise `xargs kill` au lieu de
   `pkill -f`, qui serait dangereux (risque de tuer le shell distant ou
   des processus homonymes d'autres utilisateurs).
-- **Déploiement séquentiel depuis le jump host** : évite de surcharger
-  `ssh.enst.fr` avec 40 connexions parallèles (qui provoquaient
-  `fork: Ressource temporairement non disponible`). Chaque saut
-  jump → TP est direct et rapide, donc séquentiel reste acceptable.
+- **Déploiement séquentiel depuis votre poste via `ProxyJump`** : toutes les
+  connexions SSH sont initiées localement, et `ssh.enst.fr` ne fait que relayer
+  le trafic vers les machines TP. La boucle reste séquentielle pour éviter de
+  lancer 40 connexions en parallèle.
 - **Liste dynamique** : `machines_alive.txt` est reconstruit à chaque
   `deploy.sh` — pas de liste obsolète.
 - **`BatchMode=yes` + `ConnectTimeout`** : les scripts échouent vite sur une
