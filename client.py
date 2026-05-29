@@ -5,36 +5,32 @@ Connects to all deployed servers, prints per-node load averages and
 cluster-wide averages (1, 5, 15 min).
 
 Usage:
-  python3 client.py [port]                         # use local machines.txt
-  python3 client.py [port] --sync <lab-host>       # fetch fresh machines.txt
-                                                   # from NFS first, then run
-
-The --sync flag solves the team stale-list problem: the deploy person uploads
-machines.txt to NFS alongside server.py.  Team members run --sync once after
-each new deployment to pull the live list before querying the cluster.
+  python3 client.py [port]               use local machines.txt
+  python3 client.py [port] --sync        try every host in local machines.txt
+                                         until one serves ~/machines.txt via NFS
+  python3 client.py [port] --sync HOST   try HOST first, then fall back as above
 """
 import concurrent.futures
-import shutil
 import socket
 import subprocess
 import sys
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
-args  = sys.argv[1:]
-PORT  = 54321
-SYNC_HOST: str | None = None
+args = sys.argv[1:]
+PORT = 54321
+DO_SYNC   = False
+SYNC_HINT = None          # optional preferred host supplied by the deploy person
 
 if args and not args[0].startswith('--'):
     PORT = int(args.pop(0))
 
 if '--sync' in args:
+    DO_SYNC = True
     idx = args.index('--sync')
-    try:
-        SYNC_HOST = args[idx + 1]
-    except IndexError:
-        print('Error: --sync requires a hostname argument.')
-        print('  e.g.  python3 client.py 60012 --sync tp-1a201-08.enst.fr')
-        sys.exit(1)
+    # --sync HOST  →  try HOST first
+    # --sync       →  no hint, iterate machines.txt directly
+    if idx + 1 < len(args) and not args[idx + 1].startswith('--'):
+        SYNC_HINT = args[idx + 1]
 
 MACHINES_FILE = 'machines.txt'
 TIMEOUT       = 5   # seconds per TCP connection attempt
@@ -42,28 +38,61 @@ TIMEOUT       = 5   # seconds per TCP connection attempt
 SCP_OPTS = [
     '-4',
     '-o', 'StrictHostKeyChecking=no',
-    '-o', 'ConnectTimeout=5',
+    '-o', 'ConnectTimeout=4',
     '-o', 'BatchMode=yes',
     '-o', 'LogLevel=ERROR',
 ]
 
 
-# ── Optional NFS sync ─────────────────────────────────────────────────────────
-def sync_machines_from_nfs(host: str) -> None:
+# ── NFS sync ──────────────────────────────────────────────────────────────────
+def sync_machines_from_nfs() -> None:
     """
-    Fetch ~/machines.txt from NFS via SCP.
-    deploy.sh uploads machines.txt to NFS alongside server.py, so this
-    always reflects the exact list used in the latest deployment.
+    Fetch ~/machines.txt from NFS by trying hosts until one responds.
+
+    Strategy:
+      1. If a SYNC_HINT host was given (printed by deploy.sh), try it first.
+      2. Fall back to every host in the local machines.txt (which may be stale,
+         but NFS is shared — any reachable lab machine holds the same file).
+      3. If nothing works, warn and proceed with whatever is on disk.
     """
-    print(f'Syncing machines.txt from NFS via {host} ...')
-    result = subprocess.run(
-        ['scp'] + SCP_OPTS + [f'{host}:~/machines.txt', MACHINES_FILE],
-        capture_output=True,
-    )
-    if result.returncode != 0:
-        print(f'  [WARN] Sync failed (host unreachable?). Using local {MACHINES_FILE}.')
-    else:
-        print(f'  [OK] machines.txt updated from NFS.\n')
+    # Build candidate list: hint first, then whatever is in local file
+    candidates: list[str] = []
+    if SYNC_HINT:
+        candidates.append(SYNC_HINT)
+
+    try:
+        with open(MACHINES_FILE) as f:
+            for line in f:
+                h = line.strip()
+                if h and h not in candidates:
+                    candidates.append(h)
+    except FileNotFoundError:
+        pass  # No local file at all — we can only try the hint
+
+    if not candidates:
+        print('[SYNC] No hosts to try (no hint given and no local machines.txt).')
+        print('       Ask the deploy person for a --sync <host> argument.')
+        return
+
+    print(f'[SYNC] Fetching machines.txt from NFS '
+          f'(trying up to {len(candidates)} host(s))...')
+
+    for host in candidates:
+        result = subprocess.run(
+            ['scp'] + SCP_OPTS + [f'{host}:~/machines.txt', MACHINES_FILE],
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            print(f'[SYNC] OK — got machines.txt via {host}\n')
+            return
+        # else: try next host silently
+
+    # Nothing worked
+    print('[SYNC] Could not reach any lab machine via SCP.')
+    print('       Possible causes:')
+    print('         • SSH key not set up: run ssh-copy-id once to any lab machine')
+    print('         • Not on campus Wi-Fi (eduroam is a different network)')
+    print(f'       Proceeding with local {MACHINES_FILE} (may be stale).\n')
 
 
 # ── Per-node TCP query ────────────────────────────────────────────────────────
@@ -94,8 +123,8 @@ def query(host: str) -> tuple:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main() -> None:
-    if SYNC_HOST:
-        sync_machines_from_nfs(SYNC_HOST)
+    if DO_SYNC:
+        sync_machines_from_nfs()
 
     try:
         with open(MACHINES_FILE) as f:
@@ -103,7 +132,7 @@ def main() -> None:
     except FileNotFoundError:
         print(f'Error: {MACHINES_FILE} not found.')
         print('  Deploy first:  ./deploy.sh <port>')
-        print('  Or sync:       python3 client.py <port> --sync <lab-host>')
+        print('  Or sync:       python3 client.py <port> --sync')
         sys.exit(1)
 
     total = len(machines)
