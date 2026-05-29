@@ -1,203 +1,201 @@
-# Distributed Computing Project — Challenge 1: Cluster Load Monitor
+# MapReduce — Challenge 1 : charge CPU distribuée
 
-Deploys a lightweight TCP server on up to 50 live school machines, then
-collects CPU load averages from every node and computes cluster-wide stats.
+Déploiement d'un serveur de charge CPU sur les machines des salles TP de
+Télécom Paris, collecte de la charge (`loadavg`) de chaque nœud depuis un
+client, et calcul de la charge moyenne du cluster.
 
-> **No jump host is used.** All SSH/SCP connections go **directly** from your
-> machine to the lab machines over campus Wi-Fi (same network).  
-> `ssh.enst.fr` is **not** involved and must **not** be used.
+## Objectif du TP
 
----
+- Récupération automatique des machines vivantes via l'API Télécom Paris.
+- Script de déploiement : upload de `server.py` sur `/tmp/slr207-group1/` d'une
+  machine, puis lancement en parallèle sur toutes les machines.
+- Le serveur écoute sur un port spécifique (choisi haut pour éviter les
+  conflits).
+- Chaque membre du groupe peut lancer le client depuis sa propre machine et
+  se connecter aux serveurs déployés (via `--sync` pour récupérer la liste).
+- Protocole : connexion TCP → le serveur envoie `load1 load5 load15` (mêmes
+  valeurs que `uptime`) → le client affiche la charge moyenne du cluster.
 
 ## Architecture
 
 ```
-                  ┌─────────────────────────────────────┐
-                  │  tp.telecom-paris.fr/ajax.php  (API) │
-                  └──────────────┬──────────────────────┘
-                                 │  get_machines.py
-                                 ▼
-                           machines.txt          ← regenerated fresh each deploy
-                                 │
-              ┌──────────────────┼───────────────────────────┐
-              │                  │                           │
-         deploy.sh           client.py                  kill.sh
-              │                  │                           │
-     1× SCP to any host    parallel TCP               parallel SSH
-     uploads server.py     to all hosts               pkill fired in bg,
-     AND machines.txt      in machines.txt            SSH exits first
-     to NFS (~/),               │
-     so team can sync      optional --sync flag:
-                           scp ~/machines.txt from
-                           NFS before querying
+  get_machines.py  ──HTTP──► https://tp.telecom-paris.fr/ajax.php
+                             filtre les machines alive et libres
+      │
+      ▼
+  machines.txt               (top 50 machines les moins chargées)
+      │
+      ▼
+  deploy.sh  ──scp──► 1 machine TP : upload server.py + machines.txt
+                       vers /tmp/slr207-group1/
+             ──ssh (parallèle)──► toutes les machines TP,
+                                   lance nohup server depuis /tmp/slr207-group1/
+      │
+      ▼
+  (déploiement terminé, hostname de la machine /tmp affiché)
+      │
+      ▼
+  client.py  ──scp --sync──► récupère machines.txt depuis /tmp/slr207-group1/
+             ──TCP parallèle──► tous les serveurs vivants
+                                lit /proc/loadavg, affiche par nœud +
+                                moyennes globales (1, 5, 15 min)
+      │
+      ▼
+  kill.sh    ──ssh──► machines TP : fuser -k sur le port,
+                      supprime server.py et .server.pid de /tmp/slr207-group1/
+             nettoie localement : supprime machines_alive.txt
 ```
 
-**Why NFS for the upload?** Your home directory (`~/`) is mounted from a
-Network File System shared across all lab machines. One `scp` to any
-reachable host makes both `server.py` and `machines.txt` instantly visible
-on all 50 machines — no per-machine upload needed.
+Le code est stocké sur le **disque local** de chaque machine dans
+`/tmp/slr207-group1/`, ce qui évite toute dépendance à un home NFS.
 
----
+## Fichiers
 
-## The Team Sync Problem (and the fix)
+| Fichier | Rôle |
+|---------|------|
+| `get_machines.py` | Interroge l'API Télécom Paris, sélectionne les 50 machines les plus libres, écrit `machines.txt` |
+| `machines.txt` | Liste dynamique des machines cibles (générée automatiquement) |
+| `server.py` | Écoute TCP sur le port choisi, envoie `load1 load5 load15` |
+| `client.py` | Interroge en parallèle toutes les machines, affiche les stats. Supporte `--sync` pour récupérer `machines.txt` depuis `/tmp` |
+| `deploy.sh` | Phase 0 : appelle `get_machines.py`. Phase 1 : upload vers `/tmp/slr207-group1/` sur une machine. Phase 2 : lance le serveur en parallèle sur toutes les machines |
+| `kill.sh` | Tue les serveurs via `fuser -k` sur le port, nettoie `/tmp/slr207-group1/` |
+| `.editorconfig` | Force les fins de ligne LF pour éviter les problèmes CRLF sous Windows/WSL |
 
-`deploy.sh` regenerates `machines.txt` fresh from the API on every run.
-The set of live machines changes each session. If team members use a stale
-`machines.txt` from git, their `client.py` connects to the wrong set of
-machines.
+## Pré-requis
 
-**Fix:** `deploy.sh` uploads `machines.txt` to NFS alongside `server.py`.
-Team members run `--sync` once after each deployment:
-
-```bash
-# Person who deployed:
-./deploy.sh 60012
-# → uploads server.py AND machines.txt to ~/  on NFS
-# → at the end, prints the exact --sync command to share with the team
-
-# Every other team member (once per deployment):
-python3 client.py 60012 --sync tp-1a201-08.enst.fr
-# → fetches ~/machines.txt from NFS, saves it locally, then queries
-```
-
-The deploy person shares the `--sync <host>` command (it's printed at the
-end of `./deploy.sh` output). After that first sync, team members can run
-`python3 client.py 60012` normally without `--sync`.
-
----
-
-## Files
-
-| File | Role |
-|---|---|
-| `get_machines.py` | Queries the school API, saves alive & free hostnames to `machines.txt` |
-| `machines.txt` | Live machine list — **auto-generated**, never edit by hand, do not rely on git version |
-| `server.py` | Listens on the chosen port, replies with `load1 load5 load15` |
-| `client.py` | Queries all hosts in parallel; `--sync <host>` pulls fresh `machines.txt` from NFS |
-| `deploy.sh` | Phase 0: fetch machines via API. Phase 1: 1 SCP (server.py + machines.txt) + parallel SSH |
-| `kill.sh` | Sends `pkill` to every node in parallel, removes NFS files, verifies |
-
-There is **no** `machines_alive.txt`. The single source of truth is `machines.txt`,
-rebuilt from the API on every `./deploy.sh` run and synced to NFS.
-
----
-
-## Protocol
-
-One TCP connection = one response, then server closes the connection.
-
-```
-client  ──── TCP connect ────────► server
-client  ◄─── "l1 l5 l15\n" ─────  server  (floats, space-separated)
-             (connection closed)
-```
-
-- `l1 / l5 / l15`: 1-min, 5-min, 15-min load averages (same as `uptime`)
-- Source: `/proc/loadavg` on each lab machine
-- Default port: **54321** — use a high unique port to avoid conflicts with other students
-
----
-
-## Prerequisites
-
-1. **Campus Wi-Fi** (not eduroam — eduroam is on a different network from the lab machines).
-2. **SSH key** set up so you can reach lab machines without a password:
+1. **Compte Télécom Paris** actif.
+2. **Connexion au Wi-Fi campus** (nécessaire pour l'API et l'accès SSH direct).
+3. **Clé SSH** copiée sur les machines TP :
    ```bash
    ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
-   # Copy your public key to any lab machine once —
-   # NFS propagates it to all machines automatically:
    ssh-copy-id -i ~/.ssh/id_ed25519.pub <login>@tp-1a201-01.enst.fr
    ```
-3. **Python 3** available locally.
-4. No jump host config needed — direct SSH works from campus Wi-Fi.
 
----
+## Utilisation
 
-## Usage
-
-### Person deploying
-
+### Déployer (une seule personne du groupe)
 ```bash
-./deploy.sh 60012
+./deploy.sh           # port 54321 par défaut
+./deploy.sh 54555     # port personnalisé
 ```
 
-At the end of the output:
+Sortie typique :
 ```
+=================================================
+ Phase 0: Fetching Alive Machines from API
+=================================================
+  → 50 machines loaded from machines.txt
+
+=================================================
+ Phase 1: Parallel Deployment
+=================================================
+[1/2] Syncing server.py + machines.txt to local disk on a lab machine...
+      Trying tp-1a201-04.enst.fr                ... [OK]
+[2/2] Bootstrapping cluster processes...
+  [STARTED] -> tp-1a201-04.enst.fr
+  [STARTED] -> tp-1a201-07.enst.fr
+  ...
 =================================================
  Deployment complete.
 
- Verify:      python3 client.py 60012
- Team sync:   python3 client.py 60012 --sync tp-1a201-08.enst.fr
+ machines.txt stored on: tp-1a201-04.enst.fr:/tmp/slr207-group1/
+
+ Verify:      python3 client.py 54321
+ Team sync:   python3 client.py 54321 --sync tp-1a201-04.enst.fr
 =================================================
 ```
 
-Share the `Team sync:` line with your group.
+### Interroger le cluster
 
-### Verify (deploy person)
-
+**Depuis la machine du déployeur :**
 ```bash
-python3 client.py 60012
+python3 client.py              # utilise le machines.txt local + port 54321
+python3 client.py 54555        # port personnalisé
 ```
 
-### Other team members — first time after each deployment
-
+**Depuis la machine d'un autre membre (sync) :**
 ```bash
-python3 client.py 60012 --sync tp-1a201-08.enst.fr
-# Syncing machines.txt from NFS via tp-1a201-08.enst.fr ...
-#   [OK] machines.txt updated from NFS.
-#
-# Connecting to 50 machines on port 60012...
-# ...
+python3 client.py 54321 --sync tp-1a201-04.enst.fr
 ```
 
-After the sync, the local `machines.txt` is up to date and subsequent runs
-work without `--sync`.
+Cela récupère `machines.txt` depuis `/tmp/slr207-group1/` de la machine
+indiquée, puis interroge tous les serveurs.
 
-### Kill and clean
+Sortie :
+```
+Connecting to 50 machines on port 54321...
 
-```bash
-./kill.sh 60012
+  tp-1a201-04.enst.fr         load: 0.00  0.00  0.00
+  tp-1a201-07.enst.fr         load: 0.02  0.01  0.00
+  ...
+=======================================================
+  Nodes responded: 48/50
+  Avg cluster load  1 min : 0.0124
+  Avg cluster load  5 min : 0.0098
+  Avg cluster load 15 min : 0.0067
+=======================================================
 ```
 
-- Sends `pkill -9` to every node in parallel (fire-and-forget — see below).
-- Removes `~/server.py` and `~/machines.txt` from NFS.
-- Auto-verifies: re-runs `client.py` after 2 seconds to confirm 0 nodes respond.
+### Arrêter et nettoyer
+```bash
+./kill.sh
+```
 
----
+- Tue les serveurs via `fuser -k` sur le port.
+- Supprime `server.py` et `.server.pid` de `/tmp/slr207-group1/` sur chaque
+  machine.
+- Supprime `machines_alive.txt` localement.
 
-## Design notes
+## Protocole
 
-**Direct SSH, no jump host.**  
-Campus Wi-Fi puts your machine in the same L3 network as `tp-*.enst.fr`.
-Using `ssh.enst.fr` as a ProxyJump is explicitly **forbidden**.
+Très simple : 1 connexion TCP = 1 réponse.
 
-**One SCP uploads both files.**  
-`scp server.py machines.txt <host>:~/` — both land on NFS, both visible
-everywhere. The `--sync` flag in `client.py` does the reverse: pulls
-`~/machines.txt` from NFS to local disk.
+```
+client  ─── TCP connect ────► serveur
+client  ◄── "l1 l5 l15\n" ─── serveur
+        (connexion fermée côté serveur)
+```
 
-**NFS vs local disk.**  
-For this challenge the server writes nothing (only reads `/proc/loadavg`).
-Local disk matters in the next challenge (MapReduce), where map output must
-go to `/tmp` (node-local) rather than `~/` (NFS), matching Figure 1 of
-the Dean & Ghemawat paper.
+- `l1`, `l5`, `l15` : floats, charge moyenne sur 1 / 5 / 15 minutes
+  (lus depuis `/proc/loadavg`, exactement comme `uptime`).
+- Port par défaut : **54321** (plage haute, peu susceptible de conflit).
 
-**Fire-and-forget kill pattern.**  
-`pkill … & exit 0` on the remote side: pkill is forked in background, SSH
-exits with 0 before the process is killed. This gives reliable `[CLEANED]`
-reports even when killing a process disrupts its own SSH tunnel.
+## Choix techniques / bonnes pratiques
 
-**`SO_REUSEADDR` on the server.**  
-Allows restarting on the same port immediately after a kill without waiting
-for the OS `TIME_WAIT` timeout.
+- **Stockage local** (`/tmp/slr207-group1/`) : aucune dépendance au home NFS.
+  Le code et les artefacts sont stockés sur le disque local de chaque machine.
+- **Génération dynamique** de `machines.txt` via l'API : pas de liste statique
+  à maintenir, détecte automatiquement les machines allumées et libres.
+- **Port élevé** (`54321`) : pas de conflit avec services système (< 1024) ni
+  ports classiques.
+- **`SO_REUSEADDR`** : permet de relancer le serveur rapidement après kill.
+- **Déploiement parallèle** : lance les serveurs sur toutes les machines en
+  parallèle via des sous-shells SSH.
+- **`--sync` dans le client** : permet à tout membre du groupe de récupérer
+  `machines.txt` depuis `/tmp` d'une machine lab sans avoir à re-déployer.
+- **IPv4 forcé** (`-4`) : évite les bugs de résolution IPv6 sous WSL2.
+- **`BatchMode=yes` + `ConnectTimeout`** : les scripts échouent vite sur une
+  machine injoignable au lieu de bloquer.
+- **Côté client, `ThreadPoolExecutor(max_workers=100)`** : interroge les
+  serveurs rapidement en parallèle.
+- **`.editorconfig`** : force LF pour éviter les problèmes CRLF qui cassent
+  les scripts shell sous WSL/Linux.
 
----
+## Respect de l'infrastructure partagée
 
-## Known limitations
+- Le serveur est **minuscule** (quasi idle). Il ne consomme rien : juste un
+  `accept()` bloquant.
+- **Pas d'orchestrateur central** ni de nœud maître — simple pattern
+  client/serveur sans état.
+- **Cleanup systématique** via `./kill.sh` : ne laisse aucun processus
+  orphelin ni fichier sur les machines.
+- **Limite raisonnable** (50 machines) ; pas de scan agressif du parc.
 
-- The API currently returns ~50 alive & free machines. This is an
-  infrastructure constraint, not a script bug.
-- A few machines in rooms `1a207` and `1a222` are persistently unreachable —
-  `[FAILED]` / `UNREACHABLE` on those is expected.
-- Server is single-threaded (`accept()` loop). Fine for this protocol
-  (one short response per connection), not suitable for concurrent requests.
+## Limitations connues
+
+- Nécessite une connexion au Wi-Fi campus pour accéder à l'API et aux
+  machines.
+- Serveur mono-thread : `accept()` séquentiel suffit pour le protocole
+  (quelques connexions courtes).
+- Pas de chiffrement applicatif : la charge CPU n'est pas sensible, et le
+  trafic transite sur le réseau interne ENST.
