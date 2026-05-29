@@ -4,17 +4,69 @@ Load client — Challenge 1.
 Connects to all deployed servers, prints per-node load averages and
 cluster-wide averages (1, 5, 15 min).
 
-Usage: python3 client.py [port]
+Usage:
+  python3 client.py [port]                         # use local machines.txt
+  python3 client.py [port] --sync <lab-host>       # fetch fresh machines.txt
+                                                   # from NFS first, then run
+
+The --sync flag solves the team stale-list problem: the deploy person uploads
+machines.txt to NFS alongside server.py.  Team members run --sync once after
+each new deployment to pull the live list before querying the cluster.
 """
 import concurrent.futures
+import shutil
 import socket
+import subprocess
 import sys
 
-PORT           = int(sys.argv[1]) if len(sys.argv) > 1 else 54321
-MACHINES_FILE  = 'machines.txt'
-TIMEOUT        = 5          # seconds per connection attempt
+# ── Argument parsing ──────────────────────────────────────────────────────────
+args  = sys.argv[1:]
+PORT  = 54321
+SYNC_HOST: str | None = None
+
+if args and not args[0].startswith('--'):
+    PORT = int(args.pop(0))
+
+if '--sync' in args:
+    idx = args.index('--sync')
+    try:
+        SYNC_HOST = args[idx + 1]
+    except IndexError:
+        print('Error: --sync requires a hostname argument.')
+        print('  e.g.  python3 client.py 60012 --sync tp-1a201-08.enst.fr')
+        sys.exit(1)
+
+MACHINES_FILE = 'machines.txt'
+TIMEOUT       = 5   # seconds per TCP connection attempt
+
+SCP_OPTS = [
+    '-4',
+    '-o', 'StrictHostKeyChecking=no',
+    '-o', 'ConnectTimeout=5',
+    '-o', 'BatchMode=yes',
+    '-o', 'LogLevel=ERROR',
+]
 
 
+# ── Optional NFS sync ─────────────────────────────────────────────────────────
+def sync_machines_from_nfs(host: str) -> None:
+    """
+    Fetch ~/machines.txt from NFS via SCP.
+    deploy.sh uploads machines.txt to NFS alongside server.py, so this
+    always reflects the exact list used in the latest deployment.
+    """
+    print(f'Syncing machines.txt from NFS via {host} ...')
+    result = subprocess.run(
+        ['scp'] + SCP_OPTS + [f'{host}:~/machines.txt', MACHINES_FILE],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        print(f'  [WARN] Sync failed (host unreachable?). Using local {MACHINES_FILE}.')
+    else:
+        print(f'  [OK] machines.txt updated from NFS.\n')
+
+
+# ── Per-node TCP query ────────────────────────────────────────────────────────
 def query(host: str) -> tuple:
     """Open a TCP connection to host:PORT and read the load triple."""
     try:
@@ -40,26 +92,31 @@ def query(host: str) -> tuple:
     return host, None, None, None
 
 
+# ── Main ──────────────────────────────────────────────────────────────────────
 def main() -> None:
+    if SYNC_HOST:
+        sync_machines_from_nfs(SYNC_HOST)
+
     try:
         with open(MACHINES_FILE) as f:
             machines = [line.strip() for line in f if line.strip()]
     except FileNotFoundError:
-        print(f'Error: {MACHINES_FILE} not found. Run ./deploy.sh first.')
+        print(f'Error: {MACHINES_FILE} not found.')
+        print('  Deploy first:  ./deploy.sh <port>')
+        print('  Or sync:       python3 client.py <port> --sync <lab-host>')
         sys.exit(1)
 
     total = len(machines)
     print(f'Connecting to {total} machines on port {PORT}...\n')
 
-    results, failed = [], []
-
     with concurrent.futures.ThreadPoolExecutor(max_workers=100) as pool:
         futures = {pool.submit(query, m): m for m in machines}
         raw = [f.result() for f in concurrent.futures.as_completed(futures)]
 
-    # Sort: reachable nodes first (by hostname), unreachable at the bottom
+    # Sort: reachable nodes first (alphabetical), unreachable at the bottom
     raw.sort(key=lambda r: (r[1] is None, r[0]))
 
+    results, failed = [], []
     for host, l1, l5, l15 in raw:
         if l1 is None:
             failed.append(host)
