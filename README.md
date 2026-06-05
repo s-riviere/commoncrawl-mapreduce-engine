@@ -1,6 +1,12 @@
-# DO NOT RUN - STILL CONTAINS ERRORS TO BE FIXED
-
 # MapReduce — Challenge 1 : charge CPU distribuée
+
+```
+# NOTE: It's probably required to add something like that to `~/.ssh/config`:
+Host tp-*
+  User rdeloye-24
+  PreferredAuthentications publickey
+  IdentityFile "~/.ssh/telecom_paris"
+```
 
 Déploiement d'un serveur de charge CPU sur les machines des salles TP de
 Télécom Paris, collecte de la charge (`loadavg`) de chaque nœud depuis un
@@ -28,28 +34,28 @@ client, et calcul de la charge moyenne du cluster.
   machines.txt               (top 50 machines les moins chargées)
       │
       ▼
-  deploy.sh  ──scp──► 1 machine TP : upload server.py + machines.txt
-                       vers /tmp/slr207-group1/
+  deploy.sh  ──scp──► 1 machine TP : upload server.py (NFS ~/),
+                       machines.txt vers /tmp/slr207-group1/
              ──ssh (parallèle)──► toutes les machines TP,
-                                   lance nohup server depuis /tmp/slr207-group1/
+                                   lance nohup python3 ~/server.py
       │
       ▼
   (déploiement terminé, hostname de la machine /tmp affiché)
       │
       ▼
   client.py  ──scp --sync──► récupère machines.txt depuis /tmp/slr207-group1/
-             ──TCP parallèle──► tous les serveurs vivants
+             ──TCP séquentiel──► tous les serveurs vivants
                                 lit /proc/loadavg, affiche par nœud +
                                 moyennes globales (1, 5, 15 min)
       │
       ▼
-  kill.sh    ──ssh──► machines TP : fuser -k sur le port,
+  kill.sh    ──ssh──► machines TP : fuser + kill PID sur le port,
                       supprime server.py et .server.pid de /tmp/slr207-group1/
-             nettoie localement : supprime machines_alive.txt
 ```
 
-Le code est stocké sur le **disque local** de chaque machine dans
-`/tmp/slr207-group1/`, ce qui évite toute dépendance à un home NFS.
+Le code serveur est sur le **home NFS** (`~/server.py`), visible depuis toutes
+les machines. Seul `machines.txt` est stocké dans `/tmp/slr207-group1/` (disque
+local d'une machine).
 
 ## Fichiers
 
@@ -59,8 +65,8 @@ Le code est stocké sur le **disque local** de chaque machine dans
 | `machines.txt` | Liste dynamique des machines cibles (générée automatiquement) |
 | `server.py` | Écoute TCP sur le port choisi, envoie `load1 load5 load15` |
 | `client.py` | Interroge en parallèle toutes les machines, affiche les stats. Supporte `--sync` pour récupérer `machines.txt` depuis `/tmp` |
-| `deploy.sh` | Phase 0 : appelle `get_machines.py`. Phase 1 : upload vers `/tmp/slr207-group1/` sur une machine. Phase 2 : lance le serveur en parallèle sur toutes les machines |
-| `kill.sh` | Tue les serveurs via `fuser -k` sur le port, nettoie `/tmp/slr207-group1/` |
+| `deploy.sh` | Phase 0 : appelle `get_machines.py`. Phase 1 : upload `server.py` via NFS (`~/`) et `machines.txt` vers `/tmp/slr207-group1/` sur une machine. Phase 2 : lance le serveur en parallèle sur toutes les machines |
+| `kill.sh` | Trouve le PID via `fuser <port>/tcp`, envoie SIGTERM puis SIGKILL, nettoie `/tmp/slr207-group1/` |
 | `.editorconfig` | Force les fins de ligne LF pour éviter les problèmes CRLF sous Windows/WSL |
 
 ## Pré-requis
@@ -143,10 +149,9 @@ Connecting to 50 machines on port 54321...
 ./kill.sh
 ```
 
-- Tue les serveurs via `fuser -k` sur le port.
+- Trouve le PID écoutant sur le port via `fuser`, puis envoie SIGTERM + SIGKILL.
 - Supprime `server.py` et `.server.pid` de `/tmp/slr207-group1/` sur chaque
   machine.
-- Supprime `machines_alive.txt` localement.
 
 ## Protocole
 
@@ -164,8 +169,9 @@ client  ◄── "l1 l5 l15\n" ─── serveur
 
 ## Choix techniques / bonnes pratiques
 
-- **Stockage local** (`/tmp/slr207-group1/`) : aucune dépendance au home NFS.
-  Le code et les artefacts sont stockés sur le disque local de chaque machine.
+- **Stockage hybride** : `server.py` sur le home NFS (`~/`), visible depuis
+  toutes les machines. `machines.txt` sur le disque local (`/tmp/slr207-group1/`)
+  d'une machine de référence.
 - **Génération dynamique** de `machines.txt` via l'API : pas de liste statique
   à maintenir, détecte automatiquement les machines allumées et libres.
 - **Port élevé** (`54321`) : pas de conflit avec services système (< 1024) ni
@@ -178,8 +184,8 @@ client  ◄── "l1 l5 l15\n" ─── serveur
 - **IPv4 forcé** (`-4`) : évite les bugs de résolution IPv6 sous WSL2.
 - **`BatchMode=yes` + `ConnectTimeout`** : les scripts échouent vite sur une
   machine injoignable au lieu de bloquer.
-- **Côté client, `ThreadPoolExecutor(max_workers=100)`** : interroge les
-  serveurs rapidement en parallèle.
+- **Côté client, interrogation séquentielle** avec délai de 0.5s entre chaque
+  requête pour éviter le rate-limiting SSH côté serveur.
 - **`.editorconfig`** : force LF pour éviter les problèmes CRLF qui cassent
   les scripts shell sous WSL/Linux.
 

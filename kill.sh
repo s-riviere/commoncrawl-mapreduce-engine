@@ -6,11 +6,8 @@
 
 set -uo pipefail
 
-ALIVE_FILE="${1:-machines_alive.txt}"
+ALIVE_FILE="${1:-machines.txt}"
 PORT="${2:-54321}"
-REMOTE_USER="rdeloye-24"
-REMOTE_USER="kabil-25"
-JUMP="ssh.enst.fr"
 REMOTE_DIR="/tmp/slr207-group1"
 REMOTE_SERVER_PATH="${REMOTE_DIR}/server.py"
 REMOTE_PID_PATH="${REMOTE_DIR}/.server.pid"
@@ -22,30 +19,30 @@ fi
 
 echo "Stopping servers on port $PORT..."
 
-ROPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=6 -o BatchMode=yes -o LogLevel=ERROR"
-JUMP_SPEC="${REMOTE_USER}@${JUMP}"
+ROPTS="-4 -o StrictHostKeyChecking=no -o ConnectTimeout=6 -o BatchMode=yes -o LogLevel=ERROR"
 
 while IFS= read -r host; do
     host="${host%%$'\r'}"
     [[ -z "$host" ]] && continue
-    result=$(ssh -n $ROPTS -J "$JUMP_SPEC" "${REMOTE_USER}@${host}" \
-        "if fuser -k -TERM ${PORT}/tcp >/dev/null 2>&1; then
-            sleep 0.2
-            fuser -k -KILL ${PORT}/tcp >/dev/null 2>&1 || true
+    result=$(ssh -n $ROPTS "${host}" \
+        "pid=\$(fuser ${PORT}/tcp 2>/dev/null | tr -dc '0-9')
+        echo -n \"PID=[\$pid] \" >&2
+        if [[ -n \"\$pid\" ]]; then
+            kill -TERM \$pid >&2 || true
+            sleep 0.3
+            kill -9 \$pid 2>/dev/null || true
             rm -f '${REMOTE_PID_PATH}' '${REMOTE_SERVER_PATH}'
             echo killed
         else
             rm -f '${REMOTE_PID_PATH}' '${REMOTE_SERVER_PATH}'
             echo not_running
         fi" \
-        2>/dev/null || echo unreachable)
+        2>&1 || echo unreachable)
     echo "  [${result}]  $host"
 done < "$ALIVE_FILE"
 
 echo ""
 echo "  Removed ${REMOTE_SERVER_PATH} from each machine's local disk."
 
-rm -f "$ALIVE_FILE"
-echo "  Removed $ALIVE_FILE."
 echo ""
 echo "All clean."

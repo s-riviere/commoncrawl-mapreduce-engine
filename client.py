@@ -6,9 +6,7 @@ cluster-wide averages (1, 5, 15 min).
 
 Usage:
   python3 client.py [port]               use local machines.txt
-  python3 client.py [port] --sync        try every host in local machines.txt
-                                         until one serves ~/machines.txt via NFS
-  python3 client.py [port] --sync HOST   try HOST first, then fall back as above
+  python3 client.py [port] --sync HOST   fetch machines.txt from HOST:/tmp/slr207-group1/
 """
 import concurrent.futures
 import socket
@@ -19,7 +17,7 @@ import sys
 args = sys.argv[1:]
 PORT = 54321
 DO_SYNC   = False
-SYNC_HINT = None          # optional preferred host supplied by the deploy person
+SYNC_HOST = None          # host from which to fetch machines.txt
 
 if args and not args[0].startswith('--'):
     PORT = int(args.pop(0))
@@ -27,10 +25,12 @@ if args and not args[0].startswith('--'):
 if '--sync' in args:
     DO_SYNC = True
     idx = args.index('--sync')
-    # --sync HOST  →  try HOST first
-    # --sync       →  no hint, iterate machines.txt directly
     if idx + 1 < len(args) and not args[idx + 1].startswith('--'):
-        SYNC_HINT = args[idx + 1]
+        SYNC_HOST = args[idx + 1]
+    else:
+        print('Error: --sync requires a HOST argument.')
+        print('Usage: python3 client.py [port] --sync HOST')
+        sys.exit(1)
 
 MACHINES_FILE = 'machines.txt'
 TIMEOUT       = 5   # seconds per TCP connection attempt
@@ -38,62 +38,30 @@ TIMEOUT       = 5   # seconds per TCP connection attempt
 SCP_OPTS = [
     '-4',
     '-o', 'StrictHostKeyChecking=no',
-    '-o', 'ConnectTimeout=4',
+    '-o', 'ConnectTimeout=10',
     '-o', 'BatchMode=yes',
     '-o', 'LogLevel=ERROR',
 ]
 
 
-# ── NFS sync ──────────────────────────────────────────────────────────────────
-def sync_machines_from_nfs() -> None:
-    """
-    Fetch machines.txt from /tmp on a lab machine.
+# ── Sync from /tmp ────────────────────────────────────────────────────────────
+def sync_machines(host: str) -> None:
+    """Fetch machines.txt from HOST:/tmp/slr207-group1/machines.txt."""
+    remote_path = f'{host}:/tmp/slr207-group1/machines.txt'
+    print(f'[SYNC] Fetching machines.txt from {remote_path} ...')
 
-    Strategy:
-      1. If a SYNC_HINT host was given (printed by deploy.sh), try it first.
-      2. Fall back to every host in the local machines.txt (which may be stale).
-      3. If nothing works, warn and proceed with whatever is on disk.
-    """
-    remote_dir = '/tmp/slr207-group1'
-
-    # Build candidate list: hint first, then whatever is in local file
-    candidates: list[str] = []
-    if SYNC_HINT:
-        candidates.append(SYNC_HINT)
-
-    try:
-        with open(MACHINES_FILE) as f:
-            for line in f:
-                h = line.strip()
-                if h and h not in candidates:
-                    candidates.append(h)
-    except FileNotFoundError:
-        pass  # No local file at all — we can only try the hint
-
-    if not candidates:
-        print('[SYNC] No hosts to try (no hint given and no local machines.txt).')
-        print('       Ask the deploy person for a --sync <host> argument.')
-        return
-
-    print(f'[SYNC] Fetching machines.txt from /tmp on lab machine '
-          f'(trying up to {len(candidates)} host(s))...')
-
-    for host in candidates:
-        result = subprocess.run(
-            ['scp'] + SCP_OPTS + [f'{host}:{remote_dir}/machines.txt', MACHINES_FILE],
-            capture_output=True,
-        )
-        if result.returncode == 0:
-            print(f'[SYNC] OK — got machines.txt via {host}\n')
-            return
-        # else: try next host silently
-
-    # Nothing worked
-    print('[SYNC] Could not reach any lab machine via SCP.')
-    print('       Possible causes:')
-    print('         • SSH key not set up: run ssh-copy-id once to any lab machine')
-    print('         • Not on campus Wi-Fi (eduroam is a different network)')
-    print(f'       Proceeding with local {MACHINES_FILE} (may be stale).\n')
+    result = subprocess.run(
+        ['scp'] + SCP_OPTS + [remote_path, MACHINES_FILE],
+        capture_output=True,
+    )
+    if result.returncode == 0:
+        print(f'[SYNC] OK — got machines.txt from {host}\n')
+    else:
+        print('[SYNC] Failed to fetch machines.txt.')
+        print('       Possible causes:')
+        print('         • SSH key not set up on that machine')
+        print('         • Machine is unreachable')
+        print(f'       Proceeding with local {MACHINES_FILE} (may be stale).\n')
 
 
 # ── Per-node TCP query ────────────────────────────────────────────────────────
@@ -125,7 +93,7 @@ def query(host: str) -> tuple:
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main() -> None:
     if DO_SYNC:
-        sync_machines_from_nfs()
+        sync_machines(SYNC_HOST)
 
     try:
         with open(MACHINES_FILE) as f:
@@ -139,9 +107,12 @@ def main() -> None:
     total = len(machines)
     print(f'Connecting to {total} machines on port {PORT}...\n')
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=100) as pool:
-        futures = {pool.submit(query, m): m for m in machines}
-        raw = [f.result() for f in concurrent.futures.as_completed(futures)]
+    raw = []
+    for m in machines:
+        raw.append(query(m))
+        print(f"Done: {m}")
+        import time
+        time.sleep(0.5)
 
     # Sort: reachable nodes first (alphabetical), unreachable at the bottom
     raw.sort(key=lambda r: (r[1] is None, r[0]))

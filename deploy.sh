@@ -43,7 +43,7 @@ echo "================================================="
 echo " Phase 1: Parallel Deployment"
 echo "================================================="
 
-echo "[1/2] Syncing server.py + machines.txt to local disk on a lab machine..."
+echo "[1/2] Uploading server.py (NFS) + machines.txt (/tmp) ..."
 UPLOADED=0
 NFS_HOST=""
 REMOTE_DIR="/tmp/slr207-group1"
@@ -51,25 +51,28 @@ REMOTE_DIR="/tmp/slr207-group1"
 while IFS= read -r host; do
     [[ -z "$host" ]] && continue
     printf "      Trying %-35s ... " "$host"
-    # Create remote dir, then upload both files to /tmp on that machine.
-    if timeout 10 ssh -4 \
+    # server.py → ~/  (NFS, visible from all machines)
+    # machines.txt → /tmp/slr207-group1/ (local disk on this host only)
+    if timeout 15 ssh $SSH_OPTS "$host" "mkdir -p $REMOTE_DIR" 2>/dev/null && \
+       timeout 15 scp -4 \
         -o StrictHostKeyChecking=no \
-        -o ConnectTimeout=4 \
+        -o ConnectTimeout=10 \
         -o BatchMode=yes \
         -o LogLevel=ERROR \
-        "$host" "mkdir -p $REMOTE_DIR" 2>/dev/null && \
-       timeout 10 scp -4 \
+        "server.py" "${host}:~/" 2>/dev/null && \
+       timeout 15 scp -4 \
         -o StrictHostKeyChecking=no \
-        -o ConnectTimeout=4 \
+        -o ConnectTimeout=10 \
         -o BatchMode=yes \
         -o LogLevel=ERROR \
-        "server.py" "machines.txt" "${host}:${REMOTE_DIR}/" 2>/dev/null; then
+        "machines.txt" "${host}:${REMOTE_DIR}/" 2>/dev/null; then
         echo "[OK]"
         UPLOADED=1
         NFS_HOST="$host"
         break
     fi
     echo "[timeout]"
+    sleep 1
 done < "$MACHINES_FILE"
 
 if [[ $UPLOADED -eq 0 ]]; then
@@ -87,10 +90,9 @@ while IFS= read -r host; do
     [[ -z "$host" ]] && continue
 
     (
-        # 'nohup … &' detaches the server from this SSH session.
-        # 'echo ok' confirms the fork happened before SSH exits.
-        if timeout 6 ssh $SSH_OPTS "$host" \
-            "mkdir -p $REMOTE_DIR && cp ${REMOTE_DIR}/server.py ${REMOTE_DIR}/server_run.py 2>/dev/null; nohup python3 ${REMOTE_DIR}/server.py ${PORT} >/dev/null 2>&1 & echo ok" \
+        # server.py is on NFS (~/), visible from all machines.
+        if timeout 20 ssh $SSH_OPTS "$host" \
+            "nohup python3 ~/server.py ${PORT} </dev/null >/dev/null 2>&1 & echo ok" \
             2>/dev/null | grep -q "^ok$"; then
             echo "  [STARTED] -> $host"
         else
@@ -98,6 +100,9 @@ while IFS= read -r host; do
         fi
     ) &
     PIDS+=($!)
+
+    # Stagger to avoid overwhelming proxy
+    sleep 1
 done < "$MACHINES_FILE"
 
 for pid in "${PIDS[@]}"; do
