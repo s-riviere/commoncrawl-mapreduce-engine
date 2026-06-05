@@ -16,7 +16,7 @@
 ## 3. Implémentation et Données
 * **Données sources :** Faire fonctionner le système sur des segments (*splits*) issus de **Common Crawl**.
     > **Rappel :** Certains segments sont stockés sur un serveur local et sont accessibles en montant le dossier `/cal/commoncrawl`.
-* **Algorithmes :** 1.  Implémenter d'abord un algorithme de **fréquence des mots** (*word frequency*).
+* **Algorithmes :** 1.  Implémenter d'abord un algorithme de **fréquence des mots** (*word frequency*).  
     2.  Implémenter d'autres algorithmes par la suite.
 
 ---
