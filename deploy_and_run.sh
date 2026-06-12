@@ -13,6 +13,10 @@ set -euo pipefail
 PORT="${1:-54321}"
 MACHINES_FILE="machines.txt"
 
+# Phase timing (deploy / fetch / upload / bootstrap). See bench.sh.
+source "$(dirname "$0")/bench.sh"
+bench_init
+
 # -4  : force IPv4 — avoids WSL2 IPv6 resolution bugs
 # -n  : no stdin (essential when running in a background subshell)
 SSH_OPTS="-4 -n \
@@ -27,7 +31,9 @@ SSH_OPTS="-4 -n \
 echo "================================================="
 echo " Phase 0: Fetching Alive Machines from API"
 echo "================================================="
+bench_start fetch_machines
 python3 get_machines.py
+bench_end fetch_machines
 
 if [[ ! -f "$MACHINES_FILE" ]]; then
     echo "Error: $MACHINES_FILE not created by get_machines.py."
@@ -44,6 +50,7 @@ echo " Phase 1: Parallel Deployment"
 echo "================================================="
 
 echo "[1/2] Uploading server.py (NFS) + machines.txt (/tmp) ..."
+bench_start upload
 UPLOADED=0
 NFS_HOST=""
 REMOTE_DIR="/tmp/slr207-group1"
@@ -94,6 +101,7 @@ while IFS= read -r host; do
     echo "[timeout]"
     sleep 1
 done < "$MACHINES_FILE"
+bench_end upload
 
 if [[ $UPLOADED -eq 0 ]]; then
     echo ""
@@ -103,6 +111,7 @@ fi
 
 # ── Phase 2: parallel SSH bootstrap ───────────────────────────────────────────
 echo "[2/2] Bootstrapping cluster processes..."
+bench_start bootstrap
 
 declare -a PIDS=()
 
@@ -136,6 +145,7 @@ done < "$MACHINES_FILE"
 for pid in "${PIDS[@]}"; do
     wait "$pid"
 done
+bench_end bootstrap
 
 echo "================================================="
 echo " Deployment complete."
@@ -145,3 +155,5 @@ echo ""
 # echo " Verify:      python3 client.py ${PORT}"
 # echo " Team sync:   python3 client.py ${PORT} --sync ${NFS_HOST}"
 echo "================================================="
+
+bench_report
