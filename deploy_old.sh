@@ -53,7 +53,7 @@ while IFS= read -r host; do
     printf "      Trying %-35s ... " "$host"
     # server.py → ~/  (NFS, visible from all machines)
     # machines.txt → /tmp/slr207-group1/ (local disk on this host only)
-    if timeout 15 ssh $SSH_OPTS "$host" "mkdir -p $REMOTE_DIR" && \
+    if timeout 15 ssh $SSH_OPTS "$host" "mkdir -p $REMOTE_DIR; chmod 777 $REMOTE_DIR" && \
        timeout 15 scp -4 \
         -o StrictHostKeyChecking=no \
         -o ConnectTimeout=10 \
