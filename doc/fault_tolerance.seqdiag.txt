@@ -1,0 +1,126 @@
+title MapReduce Fault-Tolerance Protocol — Robust (Google OSDI'04 §3.1–3.6)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Paste this whole file into https://sequencediagram.org to render / export SVG,
+# exactly like MapReduce.svg was produced.
+#
+# Compatible with our KISS protocol:
+#   HELLO → ASSIGN_MAP (1 CommonCrawl file/worker) → local /tmp/mr/part-i-j
+#   → MAP_DONE (metadata only) → barrier → START_REDUCE(peers)
+#   → N×N direct worker↔worker FETCH shuffle → REDUCE_DONE → final merge.
+#
+# Fault tolerance adds 5 ideas on top, none of which change the happy path:
+#   1. Heartbeat/lease failure detector (worker → Main).
+#   2. (task_id, attempt) tags  ⇒ idempotent, stale "zombie" results discarded.
+#   3. Atomic output commit  (write .tmp then rename)  ⇒ no partial files.
+#   4. Re-execution rules from the paper:
+#        - completed MAP on a dead node  → RE-RUN (output was on its local disk)
+#        - completed REDUCE on a dead node → NOT re-run (output on NFS ~/out, atomic)
+#        - any in-progress task on a dead node → reset to IDLE + reschedule
+#   5. Backup tasks for stragglers; Main checkpoint for master recovery.
+# ─────────────────────────────────────────────────────────────────────────────
+
+entryspacing 0.55
+participant "Main\n(coordinator)" as Main
+participant "N0" as N0
+participant "N1" as N1
+participant "N2" as N2
+
+note over Main: Persistent state (checkpointed to NFS ~/mr/master.ckpt):\n registry  {worker_id → host:port, last_seen}\n tasks     {task_id → state, attempt, owner, location}\n epoch     monotonic counter\nTask states: IDLE / IN_PROGRESS / DONE
+
+note over Main,N2: ══ Phase 0 — Registration & failure detector ══
+
+activate N0
+activate N1
+activate N2
+N0->Main: HELLO(host=tp-1a201-05, port=9000)
+N1->Main: HELLO(host=tp-1a201-07, port=9000)
+N2->Main: HELLO(host=tp-1a201-12, port=9000)
+note over Main: assign worker_ids in arrival order\nlast_seen[w] = now
+
+loop every HEARTBEAT_INTERVAL ≈ 2s  (each worker, async)
+N0->Main: HEARTBEAT(worker_id, state, task_id, attempt, progress%)
+Main-->N0: ACK(epoch)
+end
+note over Main: Failure detector (lease):\nif now − last_seen[w] > LEASE_TIMEOUT ≈ 10s\n  ⇒ mark w DEAD, reclaim its tasks (see below)
+
+note over Main,N2: ══ Phase 1 — MAP (with re-execution on failure) ══
+
+note over Main: enumerate /cal/commoncrawl/  → 1 file = 1 map task\nMAP tasks ≫ workers for huge data (e.g. 1000 tasks / 50 nodes)
+Main->N0: ASSIGN_MAP(task=m0, attempt=1, file=file_000.wet)
+Main->N1: ASSIGN_MAP(task=m1, attempt=1, file=file_001.wet)
+Main->N2: ASSIGN_MAP(task=m2, attempt=1, file=file_002.wet)
+
+note over N0,N2: each mapper: read (NFS) → map → partition hash(k')%R\nwrite buckets to LOCAL /tmp/mr/part-i-j.tmp  then  rename → part-i-j  (ATOMIC)
+
+N0->Main: MAP_DONE(m0, attempt=1, parts=[part-0-0..part-0-R], host:port)
+note over Main: record location[m0]=N0; m0=DONE\n(idempotent: a MAP_DONE for an already-DONE task is ignored)
+
+alt independent scenario: N1 crashes mid-map (no heartbeat)
+note over N1: ✗ process/host dies
+Main->N1: PING
+note over Main: LEASE_TIMEOUT: N1 DEAD\nm1 was IN_PROGRESS → reset to IDLE\n(also: every COMPLETED map owned by N1 → reset to IDLE,\n its /tmp output is unreachable — paper §3.1)
+Main->N2: ASSIGN_MAP(task=m1, attempt=2, file=file_001.wet)
+note over N2: re-executes m1 on a live node\nwrites part-1-* locally, atomic rename
+N2->Main: MAP_DONE(m1, attempt=2, parts=[...], host:port)
+note over Main: accept attempt=2 (current); location[m1]=N2
+end
+
+deactivate N0
+deactivate N1
+deactivate N2
+
+note over Main,N2: ══ Phase 1b — Straggler mitigation (backup tasks, paper §3.6) ══
+note over Main: when ≈95% of MAP tasks DONE and m2 still slow:\nlaunch a BACKUP attempt of m2 on an idle node
+par primary vs backup — first finish wins
+Main->N2: ASSIGN_MAP(task=m2, attempt=1)  [original, slow]
+and
+Main->N0: ASSIGN_MAP(task=m2, attempt=3, backup=true)
+end
+N0->Main: MAP_DONE(m2, attempt=3, ...)
+note over Main: m2=DONE via backup\nMain->N2: ABORT(m2) ; late MAP_DONE(attempt=1) discarded
+
+note over Main,N2: ══ BARRIER — all MAP tasks DONE ══\nMain builds routing table from METADATA only (no data read by Main)\nFor reducer j: peers = [(host_i, port_i, part-i-j) ∀ i]
+
+note over Main,N2: ══ Phase 2 — REDUCE + SHUFFLE (pull, with location repair) ══
+Main->N0: START_REDUCE(r0, attempt=1, peers=[(N0,part-0-0),(N2,part-1-0),(N0?..)])
+Main->N1: START_REDUCE(r1, attempt=1, peers=[...part-i-1...])
+Main->N2: START_REDUCE(r2, attempt=1, peers=[...part-i-2...])
+activate N0
+activate N1
+activate N2
+
+note over N0,N2: SHUFFLE = N×N direct worker↔worker FETCH; Main uninvolved\nfetched bytes merged into IN-MEMORY map (idempotent: re-fetch is safe)
+N0->N2: FETCH(part-1-0)
+N2-->N0: raw bytes → merge
+
+alt independent scenario: a source mapper host died AFTER shuffle began
+N1->N0: FETCH(part-0-1)
+note over N1: connection refused / timeout
+N1->Main: FETCH_FAILED(reducer=r1, missing=part-0-1, dead_host=N0)
+note over Main: verify via failure detector;\nif N0 DEAD ⇒ re-run its map m0 (attempt+1) on a live node,\nthen reply with the NEW location (paper: notify reducers of re-exec)
+Main->N2: ASSIGN_MAP(m0, attempt=2)  // N2 = any live worker
+N2-->Main: MAP_DONE(m0, attempt=2, host:port)
+Main-->N1: MAP_LOCATION_UPDATE(part-0-1 @ N2:port, attempt=2)
+N1->N2: FETCH(part-0-1)  // retry against new location
+N2-->N1: raw bytes → merge
+end
+
+note over N0,N2: when all R partitions fetched:\nreduce: sum counts per key → sort → top-K\nwrite ~/out/out-j.tmp then rename → ~/out/out-j  (ATOMIC, on NFS)
+N0->Main: REDUCE_DONE(r0, attempt=1, output=~/out/out-0)
+N2->Main: REDUCE_DONE(r2, attempt=1, output=~/out/out-2)
+
+alt independent scenario: N1 (a reducer) crashes before REDUCE_DONE
+note over N1: ✗ dies mid-reduce
+note over Main: LEASE_TIMEOUT: N1 DEAD\nr1 IN_PROGRESS → reset to IDLE, attempt+1\n(reduce output committed atomically ⇒ if out-1 already renamed, r1 is DONE\n and is NOT re-run — paper §3.1/§3.3)
+Main->N0: START_REDUCE(r1, attempt=2, peers=[...part-i-1...])
+note over N0: new reducer RE-FETCHES all part-i-1 from mappers\n(map outputs still present/atomically committed)
+N0->Main: REDUCE_DONE(r1, attempt=2, output=~/out/out-1)
+end
+deactivate N0
+deactivate N1
+deactivate N2
+
+note over Main,N2: ══ BARRIER — all REDUCE tasks DONE ══\nKeys are disjoint (hash-partitioned) ⇒ no re-summing\nMain reads ~/out/out-0..out-(R-1) (atomic, exactly-once), merges → global top-100
+
+note over Main: ── Master recovery (paper §3.2) ──\nMain checkpoints state every C seconds to ~/mr/master.ckpt.\nOn Main restart: reload checkpoint, re-probe workers via STATUS_QUERY,\nresume from last barrier instead of restarting the whole job.
