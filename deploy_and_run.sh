@@ -88,7 +88,7 @@ while IFS= read -r host; do
         "machines.txt" "${host}:${REMOTE_DIR}/"; then
         echo "[OK]"
         if timeout 20 ssh $SSH_OPTS "$host" \
-            "rm -rf ${REMOTE_DIR}; mkdir ${REMOTE_DIR}; nohup python3 ~/map.py main 45 ${PORT} > ${REMOTE_DIR}/logs 2>&1 & echo ok" \
+            "nohup python3 ~/map.py main 45 ${PORT} > ${REMOTE_DIR}/logs 2>&1 & echo ok" \
             | grep -q "^ok$"; then
             echo "  [MAIN STARTED] -> $host"
         else
@@ -122,7 +122,7 @@ while IFS= read -r host; do
     (
         # server.py is on NFS (~/), visible from all machines.
         if timeout 20 ssh $SSH_OPTS "$host" \
-            "rm -rf ${REMOTE_DIR}; mkdir ${REMOTE_DIR}; nohup python3 ~/map.py worker ${NFS_HOST} > ${REMOTE_DIR}/logs 2>&1 & echo ok" \
+            "mkdir ${REMOTE_DIR}; nohup python3 ~/map.py worker ${NFS_HOST} > ${REMOTE_DIR}/logs 2>&1 & echo ok" \
             | grep -q "^ok$"; then
             echo "  [STARTED] -> $host"
         else
