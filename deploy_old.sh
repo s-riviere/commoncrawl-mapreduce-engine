@@ -53,19 +53,19 @@ while IFS= read -r host; do
     printf "      Trying %-35s ... " "$host"
     # server.py → ~/  (NFS, visible from all machines)
     # machines.txt → /tmp/slr207-group1/ (local disk on this host only)
-    if timeout 15 ssh $SSH_OPTS "$host" "mkdir -p $REMOTE_DIR" 2>/dev/null && \
+    if timeout 15 ssh $SSH_OPTS "$host" "mkdir -p $REMOTE_DIR" && \
        timeout 15 scp -4 \
         -o StrictHostKeyChecking=no \
         -o ConnectTimeout=10 \
         -o BatchMode=yes \
         -o LogLevel=ERROR \
-        "server.py" "${host}:~/" 2>/dev/null && \
+        "server.py" "${host}:~/" && \
        timeout 15 scp -4 \
         -o StrictHostKeyChecking=no \
         -o ConnectTimeout=10 \
         -o BatchMode=yes \
         -o LogLevel=ERROR \
-        "machines.txt" "${host}:${REMOTE_DIR}/" 2>/dev/null; then
+        "machines.txt" "${host}:${REMOTE_DIR}/" ; then
         echo "[OK]"
         UPLOADED=1
         NFS_HOST="$host"
@@ -92,8 +92,8 @@ while IFS= read -r host; do
     (
         # server.py is on NFS (~/), visible from all machines.
         if timeout 20 ssh $SSH_OPTS "$host" \
-            "nohup python3 ~/server.py ${PORT} </dev/null >/dev/null 2>&1 & echo ok" \
-            2>/dev/null | grep -q "^ok$"; then
+            "nohup python3 ~/server.py ${PORT} & echo ok" \
+            | grep -q "^ok$"; then
             echo "  [STARTED] -> $host"
         else
             echo "  [FAILED]  -> $host"

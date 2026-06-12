@@ -21,7 +21,7 @@ bench_init
 # -n  : no stdin (essential when running in a background subshell)
 SSH_OPTS="-4 -n \
   -o StrictHostKeyChecking=no \
-  -o ConnectTimeout=4 \
+  -o ConnectTimeout=15 \
   -o BatchMode=yes \
   -o LogLevel=ERROR \
   -o ServerAliveInterval=3 \
@@ -62,41 +62,24 @@ while IFS= read -r host; do
     # worker.py → ~/  (NFS, visible from all machines)
     # wordcount.py → ~/  (NFS, visible from all machines)
     # machines.txt → /tmp/slr207-group1/ (local disk on this host only)
-    if timeout 15 ssh $SSH_OPTS "$host" "mkdir -p $REMOTE_DIR" 2>/dev/null && \
+    if timeout 15 ssh $SSH_OPTS "$host" "mkdir -p $REMOTE_DIR" && \
        timeout 15 scp -4 \
         -o StrictHostKeyChecking=no \
         -o ConnectTimeout=10 \
         -o BatchMode=yes \
         -o LogLevel=ERROR \
-        "master.py" "${host}:~/" 2>/dev/null && \
+        "map_reduce/master.py" "map_reduce/worker.py" "map_reduce/wordcount.py" \
+        "map_reduce/cluster.py" "download_commoncrawl.py" "${host}:~/" && \
        timeout 15 scp -4 \
         -o StrictHostKeyChecking=no \
         -o ConnectTimeout=10 \
         -o BatchMode=yes \
         -o LogLevel=ERROR \
-        "worker.py" "${host}:~/" 2>/dev/null && \
-       timeout 15 scp -4 \
-        -o StrictHostKeyChecking=no \
-        -o ConnectTimeout=10 \
-        -o BatchMode=yes \
-        -o LogLevel=ERROR \
-        "wordcount.py" "${host}:~/" 2>/dev/null && \
-       timeout 15 scp -4 \
-        -o StrictHostKeyChecking=no \
-        -o ConnectTimeout=10 \
-        -o BatchMode=yes \
-        -o LogLevel=ERROR \
-        "download_commoncrawl.py" "${host}:~/" 2>/dev/null && \
-       timeout 15 scp -4 \
-        -o StrictHostKeyChecking=no \
-        -o ConnectTimeout=10 \
-        -o BatchMode=yes \
-        -o LogLevel=ERROR \
-        "machines.txt" "${host}:${REMOTE_DIR}/" 2>/dev/null; then
+        "machines.txt" "${host}:${REMOTE_DIR}/"; then
         echo "[OK]"
         if timeout 20 ssh $SSH_OPTS "$host" \
-            "rm -rf ${REMOTE_DIR}; mkdir ${REMOTE_DIR}; nohup python3 ~/master.py wordcount ${PORT} </dev/null > ${REMOTE_DIR}/logs 2>&1 & echo ok" \
-            2>/dev/null | grep -q "^ok$"; then
+            "rm -rf ${REMOTE_DIR}; mkdir ${REMOTE_DIR}; nohup python3 ~/master.py wordcount ${PORT} > ${REMOTE_DIR}/logs 2>&1 & echo ok" \
+            | grep -q "^ok$"; then
             echo "  [MAIN STARTED] -> $host"
         else
             echo "  [MAIN FAILED]  -> $host"
@@ -129,8 +112,8 @@ while IFS= read -r host; do
     (
         # worker.py is on NFS (~/), visible from all machines.
         if timeout 20 ssh $SSH_OPTS "$host" \
-            "rm -rf ${REMOTE_DIR}; mkdir ${REMOTE_DIR}; nohup python3 ~/worker.py ${NFS_HOST} </dev/null > ${REMOTE_DIR}/logs 2>&1 & echo ok" \
-            2>/dev/null | grep -q "^ok$"; then
+            "rm -rf ${REMOTE_DIR}; mkdir ${REMOTE_DIR}; nohup python3 ~/worker.py ${NFS_HOST} > ${REMOTE_DIR}/logs 2>&1 & echo ok" \
+            | grep -q "^ok$"; then
             echo "  [STARTED] -> $host"
         else
             echo "  [FAILED]  -> $host"

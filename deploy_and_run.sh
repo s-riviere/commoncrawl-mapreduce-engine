@@ -61,36 +61,35 @@ while IFS= read -r host; do
     # server.py → ~/  (NFS, visible from all machines)
     # map.py → ~/  (NFS, visible from all machines)
     # machines.txt → /tmp/slr207-group1/ (local disk on this host only)
-    echo "ssh $SSH_OPTS $host 'mkdir -p $REMOTE_DIR' 2>/dev/null"
-    if timeout 15 ssh $SSH_OPTS "$host" "mkdir -p $REMOTE_DIR" 2>/dev/null && \
+    if timeout 15 ssh $SSH_OPTS "$host" "mkdir -p $REMOTE_DIR" && \
        timeout 15 scp -4 \
         -o StrictHostKeyChecking=no \
         -o ConnectTimeout=10 \
         -o BatchMode=yes \
         -o LogLevel=ERROR \
-        "server.py" "${host}:~/" 2>/dev/null && \
+        "server.py" "${host}:~/" && \
        timeout 15 scp -4 \
         -o StrictHostKeyChecking=no \
         -o ConnectTimeout=10 \
         -o BatchMode=yes \
         -o LogLevel=ERROR \
-        "map.py" "${host}:~/" 2>/dev/null && \
+        "map.py" "${host}:~/" && \
        timeout 15 scp -4 \
         -o StrictHostKeyChecking=no \
         -o ConnectTimeout=10 \
         -o BatchMode=yes \
         -o LogLevel=ERROR \
-        "download_commoncrawl.py" "${host}:~/" 2>/dev/null && \
+        "download_commoncrawl.py" "${host}:~/" && \
        timeout 15 scp -4 \
         -o StrictHostKeyChecking=no \
         -o ConnectTimeout=10 \
         -o BatchMode=yes \
         -o LogLevel=ERROR \
-        "machines.txt" "${host}:${REMOTE_DIR}/" 2>/dev/null; then
+        "machines.txt" "${host}:${REMOTE_DIR}/"; then
         echo "[OK]"
         if timeout 20 ssh $SSH_OPTS "$host" \
-            "rm -rf ${REMOTE_DIR}; mkdir ${REMOTE_DIR}; nohup python3 ~/map.py main 45 ${PORT} </dev/null > ${REMOTE_DIR}/logs 2>&1 & echo ok" \
-            2>/dev/null | grep -q "^ok$"; then
+            "rm -rf ${REMOTE_DIR}; mkdir ${REMOTE_DIR}; nohup python3 ~/map.py main 45 ${PORT} > ${REMOTE_DIR}/logs 2>&1 & echo ok" \
+            | grep -q "^ok$"; then
             echo "  [MAIN STARTED] -> $host"
         else
             echo "  [MAIN FAILED]  -> $host"
@@ -123,8 +122,8 @@ while IFS= read -r host; do
     (
         # server.py is on NFS (~/), visible from all machines.
         if timeout 20 ssh $SSH_OPTS "$host" \
-            "rm -rf ${REMOTE_DIR}; mkdir ${REMOTE_DIR}; nohup python3 ~/map.py worker ${NFS_HOST} </dev/null > ${REMOTE_DIR}/logs 2>&1 & echo ok" \
-            2>/dev/null | grep -q "^ok$"; then
+            "rm -rf ${REMOTE_DIR}; mkdir ${REMOTE_DIR}; nohup python3 ~/map.py worker ${NFS_HOST} > ${REMOTE_DIR}/logs 2>&1 & echo ok" \
+            | grep -q "^ok$"; then
             echo "  [STARTED] -> $host"
         else
             echo "  [FAILED]  -> $host"
