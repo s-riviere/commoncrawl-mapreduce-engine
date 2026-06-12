@@ -21,7 +21,7 @@ bench_init
 # -n  : no stdin (essential when running in a background subshell)
 SSH_OPTS="-4 -n \
   -o StrictHostKeyChecking=no \
-  -o ConnectTimeout=4 \
+  -o ConnectTimeout=15 \
   -o BatchMode=yes \
   -o LogLevel=ERROR \
   -o ServerAliveInterval=3 \
@@ -61,6 +61,7 @@ while IFS= read -r host; do
     # server.py → ~/  (NFS, visible from all machines)
     # map.py → ~/  (NFS, visible from all machines)
     # machines.txt → /tmp/slr207-group1/ (local disk on this host only)
+    echo "ssh $SSH_OPTS $host 'mkdir -p $REMOTE_DIR' 2>/dev/null"
     if timeout 15 ssh $SSH_OPTS "$host" "mkdir -p $REMOTE_DIR" 2>/dev/null && \
        timeout 15 scp -4 \
         -o StrictHostKeyChecking=no \
@@ -88,7 +89,7 @@ while IFS= read -r host; do
         "machines.txt" "${host}:${REMOTE_DIR}/" 2>/dev/null; then
         echo "[OK]"
         if timeout 20 ssh $SSH_OPTS "$host" \
-            "rm -rf ${REMOTE_DIR}; mkdir ${REMOTE_DIR}; nohup python3 ~/map.py main 50 ${PORT} </dev/null > ${REMOTE_DIR}/logs 2>&1 & echo ok" \
+            "rm -rf ${REMOTE_DIR}; mkdir ${REMOTE_DIR}; nohup python3 ~/map.py main 45 ${PORT} </dev/null > ${REMOTE_DIR}/logs 2>&1 & echo ok" \
             2>/dev/null | grep -q "^ok$"; then
             echo "  [MAIN STARTED] -> $host"
         else
