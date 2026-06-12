@@ -6,7 +6,7 @@
 # After deployment, other team members sync their local machines.txt by
 # running:  python3 client.py <port> --sync <any-reachable-lab-machine>
 #
-# Usage: ./deploy.sh [port]
+# Usage: ./deploy.sh [port] 
 
 set -euo pipefail
 
@@ -112,7 +112,7 @@ done
 echo "================================================="
 echo " Deployment complete."
 echo ""
-echo " machines.txt stored on: ${NFS_HOST}:${REMOTE_DIR}/"
+echo " machines.txt stored on: ${NFS_HOST}:${REMOTE_DIR}/ ATTENTION: NE PAS METTRE .enst.fr"
 echo ""
 echo " Verify:      python3 client.py ${PORT}"
 echo " Team sync:   python3 client.py ${PORT} --sync ${NFS_HOST}"
