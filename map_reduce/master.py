@@ -7,6 +7,9 @@ import json
 import sys
 import cluster
 
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
 MACHINES_FILE = 'machines.txt'
 TIMEOUT = 5
 
