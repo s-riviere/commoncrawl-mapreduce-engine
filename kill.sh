@@ -10,6 +10,10 @@ ALIVE_FILE="${1:-machines.txt}"
 PORT="${2:-54321}"
 REMOTE_DIR="/tmp/slr207-group1"
 
+# Phase timing (cleanup). See bench.sh.
+source "$(dirname "$0")/bench.sh"
+bench_init
+
 if [[ ! -f "$ALIVE_FILE" ]]; then
     echo "No $ALIVE_FILE found. Nothing to kill."
     exit 0
@@ -19,6 +23,7 @@ echo "Stopping servers on port $PORT..."
 
 ROPTS="-4 -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes -o LogLevel=ERROR"
 
+bench_start cleanup
 while IFS= read -r host; do
     host="${host%%$'\r'}"
     [[ -z "$host" ]] && continue
@@ -36,6 +41,9 @@ while IFS= read -r host; do
         2>&1 || echo unreachable)
     echo "  [${result}]  $host"
 done < "$ALIVE_FILE"
+bench_end cleanup
 
 echo ""
 echo "All clean."
+
+bench_report
