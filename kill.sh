@@ -29,6 +29,7 @@ while IFS= read -r host; do
     [[ -z "$host" ]] && continue
     result=$(ssh -n $ROPTS "${host}" \
         "pid=\$(fuser ${PORT}/tcp 2>/dev/null | tr -dc '0-9')
+        rm -rf $REMOTE_DIR
         echo -n \"PID=[\$pid] \" >&2
         if [[ -n \"\$pid\" ]]; then
             kill -TERM \$pid >&2 || true
