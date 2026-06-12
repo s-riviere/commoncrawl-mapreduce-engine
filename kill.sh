@@ -9,8 +9,6 @@ set -uo pipefail
 ALIVE_FILE="${1:-machines.txt}"
 PORT="${2:-54321}"
 REMOTE_DIR="/tmp/slr207-group1"
-REMOTE_SERVER_PATH="${REMOTE_DIR}/server.py"
-REMOTE_PID_PATH="${REMOTE_DIR}/.server.pid"
 
 if [[ ! -f "$ALIVE_FILE" ]]; then
     echo "No $ALIVE_FILE found. Nothing to kill."
@@ -19,7 +17,7 @@ fi
 
 echo "Stopping servers on port $PORT..."
 
-ROPTS="-4 -o StrictHostKeyChecking=no -o ConnectTimeout=6 -o BatchMode=yes -o LogLevel=ERROR"
+ROPTS="-4 -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes -o LogLevel=ERROR"
 
 while IFS= read -r host; do
     host="${host%%$'\r'}"
@@ -31,18 +29,13 @@ while IFS= read -r host; do
             kill -TERM \$pid >&2 || true
             sleep 0.3
             kill -9 \$pid 2>/dev/null || true
-            rm -f '${REMOTE_PID_PATH}' '${REMOTE_SERVER_PATH}'
             echo killed
         else
-            rm -f '${REMOTE_PID_PATH}' '${REMOTE_SERVER_PATH}'
             echo not_running
         fi" \
         2>&1 || echo unreachable)
     echo "  [${result}]  $host"
 done < "$ALIVE_FILE"
-
-echo ""
-echo "  Removed ${REMOTE_SERVER_PATH} from each machine's local disk."
 
 echo ""
 echo "All clean."
