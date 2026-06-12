@@ -10,7 +10,7 @@ import cluster
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
 
-MACHINES_FILE = 'machines.txt'
+MACHINES_FILE = '/tmp/slr207-group1/machines.txt'
 TIMEOUT = 5
 
 def send_task(host: str, port: int, task_type: str, job_name: str, data: dict | str) -> dict | None:

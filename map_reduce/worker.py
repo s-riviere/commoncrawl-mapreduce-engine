@@ -9,7 +9,7 @@ import os
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
 
-PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 54321
+PORT = 54321
 
 def load_user_function(module_name: str, func_name: str):
     """Charge dynamiquement une fonction depuis un fichier python local."""
