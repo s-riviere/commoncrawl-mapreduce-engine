@@ -2,13 +2,13 @@
 # Stop all load servers we own and clean up.
 # Uses fuser -k on the port: reliably kills any process (ours) listening
 # there, even orphaned ones from previous deploys.
-# Usage: ./kill.sh [alive_file] [port]
+# Usage: ./kill.sh [port] [alive_file]
 
 set -uo pipefail
 
-ALIVE_FILE="${1:-machines.txt}"
-PORT="${2:-54321}"
-REMOTE_DIR="/tmp/slr207-group1"
+PORT="${1:-54321}"
+ALIVE_FILE="${2:-machines.txt}"
+REMOTE_DIR="/tmp/slr207-group1-$USER"
 
 # Phase timing (cleanup). See bench.sh.
 source "$(dirname "$0")/bench.sh"

@@ -46,7 +46,7 @@ echo "================================================="
 echo "[1/2] Uploading server.py (NFS) + machines.txt (/tmp) ..."
 UPLOADED=0
 NFS_HOST=""
-REMOTE_DIR="/tmp/slr207-group1"
+REMOTE_DIR="/tmp/slr207-group1-$USER"
 
 while IFS= read -r host; do
     [[ -z "$host" ]] && continue
@@ -90,14 +90,22 @@ while IFS= read -r host; do
     [[ -z "$host" ]] && continue
 
     (
-        # server.py is on NFS (~/), visible from all machines.
+        ERR_LOG=$(mktemp)
+
         if timeout 20 ssh $SSH_OPTS "$host" \
-            "nohup python3 ~/server.py ${PORT} & echo ok" \
-            | grep -q "^ok$"; then
+            "nohup python3 ~/server.py ${PORT} < /dev/null > /tmp/server_${PORT}.log 2>&1 & echo ok" \
+            2> "$ERR_LOG" | grep -q "^ok$"; then
             echo "  [STARTED] -> $host"
         else
             echo "  [FAILED]  -> $host"
+            if [[ -s "$ERR_LOG" ]]; then
+                sed 's/^/      [ERREUR] /' "$ERR_LOG"
+            else
+                echo "      [ERREUR] Timeout ou absence de réponse 'ok'"
+            fi
         fi
+        
+        rm -f "$ERR_LOG"
     ) &
     PIDS+=($!)
 
