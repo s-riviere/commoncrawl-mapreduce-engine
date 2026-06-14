@@ -8,15 +8,15 @@ Usage:
   python3 client.py [port]               use local machines.txt
   python3 client.py [port] --sync HOST   fetch machines.txt from HOST:/tmp/slr207-group1/
 """
-import concurrent.futures
 import socket
 import subprocess
 import sys
+from pathlib import Path
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 args = sys.argv[1:]
 PORT = 54321
-DO_SYNC   = False
+DO_SYNC = False
 SYNC_HOST = None          # host from which to fetch machines.txt
 
 if args and not args[0].startswith('--'):
@@ -32,9 +32,9 @@ if '--sync' in args:
         print('Usage: python3 client.py [port] --sync HOST')
         sys.exit(1)
 
-MACHINES_FILE = 'machines.txt'
-TIMEOUT       = 5   # seconds per TCP connection attempt
-
+SRC_PATH = Path(__file__).resolve().parent.parent
+MACHINES_FILE = SRC_PATH / "runtime" / "machines.txt"
+TIMEOUT = 5   # seconds per TCP connection attempt
 SCP_OPTS = [
     '-4',
     '-o', 'StrictHostKeyChecking=no',

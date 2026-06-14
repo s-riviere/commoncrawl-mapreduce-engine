@@ -1,28 +1,25 @@
 # MapReduce — Challenge 1 : charge CPU distribuée
 
-```
-# NOTE: It's probably required to add something like that to `~/.ssh/config`:
-Host tp-*
-  User rdeloye-24
-  PreferredAuthentications publickey
-  IdentityFile "~/.ssh/telecom_paris"
-```
+## Description
 
 Déploiement d'un serveur de charge CPU sur les machines des salles TP de
 Télécom Paris, collecte de la charge (`loadavg`) de chaque nœud depuis un
 client, et calcul de la charge moyenne du cluster.
 
-## Objectif du TP
+## Configuration initiale
 
-- Récupération automatique des machines vivantes via l'API Télécom Paris.
-- Script de déploiement : upload de `server.py` sur `/tmp/slr207-group1/` d'une
-  machine, puis lancement en parallèle sur toutes les machines.
-- Le serveur écoute sur un port spécifique (choisi haut pour éviter les
-  conflits).
-- Chaque membre du groupe peut lancer le client depuis sa propre machine et
-  se connecter aux serveurs déployés (via `--sync` pour récupérer la liste).
-- Protocole : connexion TCP → le serveur envoie `load1 load5 load15` (mêmes
-  valeurs que `uptime`) → le client affiche la charge moyenne du cluster.
+A la racine du fichier, tapez la commande suivante pour setup pyproject :
+```
+pip install -e .
+```
+
+Dans `~/.ssh/config`, ajoutez ceci :
+```
+Host tp-*
+  User rdeloye-24 // A remplacer par votre identifiant
+  PreferredAuthentications publickey
+  IdentityFile "~/.ssh/telecom_paris" // A remplacer par votre clé
+```
 
 ## Architecture
 

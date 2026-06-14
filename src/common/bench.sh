@@ -7,7 +7,7 @@
 # bottleneck, all measured against the wall-clock of the whole run.
 #
 # Usage:
-#   source "$(dirname "$0")/bench.sh"
+#   source "path/to/bench.sh"
 #   bench_init
 #   bench_start fetch_machines
 #   ... work ...

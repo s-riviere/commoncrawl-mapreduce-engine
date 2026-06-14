@@ -7,8 +7,11 @@ sorting them to prioritize machines with 0 users.
 import urllib.request
 import json
 import sys
+from pathlib import Path
 
 API_URL = "https://tp.telecom-paris.fr/ajax.php" 
+SRC_PATH = Path(__file__).resolve().parent.parent
+MACHINES_FILE = SRC_PATH / "runtime" / "machines.txt"
 
 def main():
     print(f"Querying school API: {API_URL}")
@@ -46,12 +49,13 @@ def main():
     if not best_machines:
         print("Error: No active machines found in JSON data.")
         sys.exit(1)
-
-    with open("machines.txt", "w") as f:
-        for machine_name, score in best_machines:
+    
+    MACHINES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(MACHINES_FILE , "w") as f:
+        for machine_name, _ in best_machines:
             f.write(f"{machine_name}.enst.fr\n")
 
-    print(f"Successfully tracked and saved {len(best_machines)} ALIVE and FREE machines to machines.txt")
+    print(f"Successfully tracked and saved {len(best_machines)} ALIVE and FREE machines")
 
 if __name__ == "__main__":
     main()

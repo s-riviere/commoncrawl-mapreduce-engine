@@ -1,20 +1,42 @@
 #!/bin/bash
+
+# ==============================================================================
+# DESCRIPTION
+# ==============================================================================
 # Robust parallel deployment for WSL2 over Campus Wi-Fi.
 # Uploads server.py AND machines.txt to /tmp on one lab machine,
 # then SSH-starts one server process per machine in machines.txt.
-#
 # After deployment, other team members sync their local machines.txt by
-# running:  python3 client.py <port> --sync <any-reachable-lab-machine>
+# running:  python3 cpu_load/client.py <port> --sync <any-reachable-lab-machine>
 #
-# Usage: ./deploy.sh [port] 
+# Usage : ./deploy.sh [port]
 
-set -euo pipefail
+# ==============================================================================
+# SH CONFIGURATION
+# ==============================================================================
+set -uo pipefail
 
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+while [[ "$(basename "$CURRENT_DIR")" != "src" && "$CURRENT_DIR" != "/" ]]; do
+    CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+done
+
+if [[ "$CURRENT_DIR" == "/" ]]; then
+    echo "Erreur critique : Impossible de localiser le dossier racine 'src'." >&2
+    exit 1
+fi
+cd "$CURRENT_DIR"
+
+# ==============================================================================
+# ARGUMENTS
+# ==============================================================================
 PORT="${1:-54321}"
-MACHINES_FILE="machines.txt"
 
-# -4  : force IPv4 — avoids WSL2 IPv6 resolution bugs
-# -n  : no stdin (essential when running in a background subshell)
+# ==============================================================================
+# CONTENT
+# ==============================================================================
+MACHINES_FILE="runtime/machines.txt"
+REMOTE_DIR="/tmp/slr207-group1-$USER"
 SSH_OPTS="-4 -n \
   -o StrictHostKeyChecking=no \
   -o ConnectTimeout=4 \
@@ -27,7 +49,7 @@ SSH_OPTS="-4 -n \
 echo "================================================="
 echo " Phase 0: Fetching Alive Machines from API"
 echo "================================================="
-python3 get_machines.py
+python3 common/get_machines.py
 
 if [[ ! -f "$MACHINES_FILE" ]]; then
     echo "Error: $MACHINES_FILE not created by get_machines.py."
@@ -46,26 +68,24 @@ echo "================================================="
 echo "[1/2] Uploading server.py (NFS) + machines.txt (/tmp) ..."
 UPLOADED=0
 NFS_HOST=""
-REMOTE_DIR="/tmp/slr207-group1-$USER"
 
 while IFS= read -r host; do
     [[ -z "$host" ]] && continue
     printf "      Trying %-35s ... " "$host"
-    # server.py → ~/  (NFS, visible from all machines)
-    # machines.txt → /tmp/slr207-group1/ (local disk on this host only)
+    
     if timeout 15 ssh $SSH_OPTS "$host" "mkdir -p $REMOTE_DIR; chmod 777 $REMOTE_DIR" && \
        timeout 15 scp -4 \
         -o StrictHostKeyChecking=no \
         -o ConnectTimeout=10 \
         -o BatchMode=yes \
         -o LogLevel=ERROR \
-        "server.py" "${host}:~/" && \
+        "cpu_load/server.py" "${host}:~/" && \
        timeout 15 scp -4 \
         -o StrictHostKeyChecking=no \
         -o ConnectTimeout=10 \
         -o BatchMode=yes \
         -o LogLevel=ERROR \
-        "machines.txt" "${host}:${REMOTE_DIR}/" ; then
+        "$MACHINES_FILE" "${host}:${REMOTE_DIR}/" ; then
         echo "[OK]"
         UPLOADED=1
         NFS_HOST="$host"
@@ -109,7 +129,6 @@ while IFS= read -r host; do
     ) &
     PIDS+=($!)
 
-    # Stagger to avoid overwhelming proxy
     sleep 1
 done < "$MACHINES_FILE"
 
@@ -122,6 +141,6 @@ echo " Deployment complete."
 echo ""
 echo " machines.txt stored on: ${NFS_HOST}:${REMOTE_DIR}/ ATTENTION: NE PAS METTRE .enst.fr"
 echo ""
-echo " Verify:      python3 client.py ${PORT}"
-echo " Team sync:   python3 client.py ${PORT} --sync ${NFS_HOST}"
+echo " Verify:      python3 cpu_load/client.py ${PORT}"
+echo " Team sync:   python3 cpu_load/client.py ${PORT} --sync ${NFS_HOST}"
 echo "================================================="
