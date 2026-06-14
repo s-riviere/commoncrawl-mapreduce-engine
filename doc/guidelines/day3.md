@@ -1,5 +1,7 @@
 # Formalisation et Implémentation MapReduce
 
+Date : 29/05/2026
+
 ## 1. Formalisation et Collaboration
 * **Modélisation du protocole :** Utiliser le site [sequencediagram.org](https://www.sequencediagram.org) pour formaliser précisément le protocole.
 * **Gestion d'équipe :** Définir une méthode de répartition des tâches entre les membres du groupe et mettre en place un système de partage des découvertes et de l'état d'avancement du développement.

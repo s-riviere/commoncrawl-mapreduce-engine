@@ -1,5 +1,7 @@
 # Protocoles et MapReduce
 
+Date : 22/05/2026
+
 ## 1. Objectifs de Développement et Scripts
 * **Script de DÉPLOIEMENT :** Finaliser un script robuste capable de déployer les serveurs sur les machines cibles.
 * **Script de NETTOYAGE :** Disposer d'un script robuste permettant de nettoyer l'intégralité des processus et fichiers déployés sur les nœuds.
@@ -27,7 +29,7 @@
 * **Contraintes :** Appliquer le principe **KISS** (*Keep It Simple and Stupid*), sans gestion de la tolérance aux pannes pour le moment.
 * **Acteurs :** Inclure le nœud *Main* et plusieurs nœuds de calcul (*Workers*) identifiés par $N_0, N_1, N_2\dots$
 
-![Diagramme espace-temps sur tableau blanc illustrant le protocole MapReduce (KISS)](image.png)
+![Diagramme espace-temps sur tableau blanc illustrant le protocole MapReduce (KISS)](image_day2.png)
 
 ### Formule de Distribution (Phase Reduce)
 Pour déterminer quel nœud $N_x$ prend en charge une clé spécifique lors de la phase *Reduce*, on applique la formule de décision suivante :
