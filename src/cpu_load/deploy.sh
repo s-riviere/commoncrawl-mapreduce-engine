@@ -11,136 +11,159 @@
 #
 # Usage : ./deploy.sh [port]
 
+
 # ==============================================================================
 # SH CONFIGURATION
 # ==============================================================================
+# Colors
+NC="\e[0m"
+GREEN="\e[32m"
+YELLOW="\e[33m"
+RED="\e[31m"
+
+# Failure behavior
 set -uo pipefail
 
+# Set the current directory to the root of the project (src/)
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 while [[ "$(basename "$CURRENT_DIR")" != "src" && "$CURRENT_DIR" != "/" ]]; do
     CURRENT_DIR="$(dirname "$CURRENT_DIR")"
 done
 
 if [[ "$CURRENT_DIR" == "/" ]]; then
-    echo "Erreur critique : Impossible de localiser le dossier racine 'src'." >&2
+    echo -e "${RED}Erreur critique : Impossible de localiser le dossier racine 'src'.${NC}" >&2
     exit 1
 fi
 cd "$CURRENT_DIR"
+
 
 # ==============================================================================
 # ARGUMENTS
 # ==============================================================================
 PORT="${1:-54321}"
 
+
 # ==============================================================================
 # CONTENT
 # ==============================================================================
 MACHINES_FILE="runtime/machines.txt"
 REMOTE_DIR="/tmp/slr207-group1-$USER"
-SSH_OPTS="-4 -n \
+TIMEOUT=5
+SSH_OPTS="-4 \
   -o StrictHostKeyChecking=no \
-  -o ConnectTimeout=4 \
   -o BatchMode=yes \
   -o LogLevel=ERROR \
   -o ServerAliveInterval=3 \
   -o ServerAliveCountMax=2"
 
+upload_to_host() {
+    local host="$1"
+    timeout $TIMEOUT ssh -n $SSH_OPTS "$host" "mkdir -p $REMOTE_DIR; chmod 777 $REMOTE_DIR" && \
+    timeout $TIMEOUT scp $SSH_OPTS "cpu_load/server.py" "${host}:~/" && \
+    timeout $TIMEOUT scp $SSH_OPTS "$MACHINES_FILE" "${host}:${REMOTE_DIR}/"
+}
+
+start_server() {
+    local host="$1"
+    timeout $TIMEOUT ssh -n $SSH_OPTS "$host" \
+    "nohup python3 ~/server.py ${PORT} > /dev/null 2>&1 & 
+    sleep 0.5
+    if fuser ${PORT}/tcp >/dev/null 2>&1; then
+        echo ok
+    else
+        echo failed
+    fi" 2>/dev/null | grep -q "^ok$"
+}
+
+
 # ── Phase 0: fetch alive machines ─────────────────────────────────────────────
-echo "================================================="
-echo " Phase 0: Fetching Alive Machines from API"
-echo "================================================="
+echo -e "================================================="
+echo -e " Phase 0: Fetching Alive Machines from API       "
+echo -e "================================================="
+echo -e ""
+
 python3 common/get_machines.py
 
 if [[ ! -f "$MACHINES_FILE" ]]; then
-    echo "Error: $MACHINES_FILE not created by get_machines.py."
+    echo -e "${RED}Error : No $MACHINES_FILE found.${NC}" >&2
     exit 1
 fi
 
-TOTAL=$(wc -l < "$MACHINES_FILE")
-echo "  → $TOTAL machines loaded from $MACHINES_FILE"
+echo -e ""
+echo -e "$(wc -l < "$MACHINES_FILE") machines loaded from $MACHINES_FILE"
+echo -e ""
 
 # ── Phase 1: NFS upload (one SCP is enough — home dir is shared) ──────────────
-echo ""
-echo "================================================="
-echo " Phase 1: Parallel Deployment"
-echo "================================================="
+echo -e "================================================="
+echo -e " Phase 1: Parallel Deployment                    "
+echo -e "================================================="
+echo -e ""
+echo -e "[1/2] Uploading server.py (NFS) and machines.txt (/tmp)"
+echo -e ""
 
-echo "[1/2] Uploading server.py (NFS) + machines.txt (/tmp) ..."
-UPLOADED=0
 NFS_HOST=""
 
 while IFS= read -r host; do
+    host="${host%%$'\r'}"
     [[ -z "$host" ]] && continue
-    printf "      Trying %-35s ... " "$host"
-    
-    if timeout 15 ssh $SSH_OPTS "$host" "mkdir -p $REMOTE_DIR; chmod 777 $REMOTE_DIR" && \
-       timeout 15 scp -4 \
-        -o StrictHostKeyChecking=no \
-        -o ConnectTimeout=10 \
-        -o BatchMode=yes \
-        -o LogLevel=ERROR \
-        "cpu_load/server.py" "${host}:~/" && \
-       timeout 15 scp -4 \
-        -o StrictHostKeyChecking=no \
-        -o ConnectTimeout=10 \
-        -o BatchMode=yes \
-        -o LogLevel=ERROR \
-        "$MACHINES_FILE" "${host}:${REMOTE_DIR}/" ; then
-        echo "[OK]"
-        UPLOADED=1
+        
+    if upload_to_host "$host"; then
         NFS_HOST="$host"
+        printf "    Trying %-25s ${GREEN}[OK]${NC}\n" "$host"
         break
+    else
+        printf "    Trying %-25s ${YELLOW}[TIMEOUT]${NC}\n" "$host"
     fi
-    echo "[timeout]"
-    sleep 1
+
+    sleep 0.1
 done < "$MACHINES_FILE"
 
-if [[ $UPLOADED -eq 0 ]]; then
-    echo ""
-    echo "FATAL: Could not upload — all machines are unreachable."
+echo -e ""
+
+if [[ -z "$NFS_HOST" ]]; then
+    echo -e "${RED}FATAL: Could not upload — all machines are unreachable.${NC}" >&2
     exit 1
 fi
 
+
 # ── Phase 2: parallel SSH bootstrap ───────────────────────────────────────────
-echo "[2/2] Bootstrapping cluster processes..."
+echo -e "[2/2] Bootstrapping cluster processes (port ${PORT})"
+echo -e ""
 
 declare -a PIDS=()
 
 while IFS= read -r host; do
+    host="${host%%$'\r'}"
     [[ -z "$host" ]] && continue
 
     (
-        ERR_LOG=$(mktemp)
-
-        if timeout 20 ssh $SSH_OPTS "$host" \
-            "nohup python3 ~/server.py ${PORT} < /dev/null > /tmp/server_${PORT}.log 2>&1 & echo ok" \
-            2> "$ERR_LOG" | grep -q "^ok$"; then
-            echo "  [STARTED] -> $host"
+        if start_server "$host"; then
+            printf "    Starting %-25s ${GREEN}[STARTED]${NC}\n" "$host"
         else
-            echo "  [FAILED]  -> $host"
-            if [[ -s "$ERR_LOG" ]]; then
-                sed 's/^/      [ERREUR] /' "$ERR_LOG"
-            else
-                echo "      [ERREUR] Timeout ou absence de réponse 'ok'"
-            fi
+            printf "    Starting %-25s ${RED}[FAILED]${NC}\n" "$host"
         fi
-        
-        rm -f "$ERR_LOG"
     ) &
     PIDS+=($!)
 
-    sleep 1
+    sleep 0.1
 done < "$MACHINES_FILE"
 
 for pid in "${PIDS[@]}"; do
     wait "$pid"
 done
 
-echo "================================================="
-echo " Deployment complete."
-echo ""
-echo " machines.txt stored on: ${NFS_HOST}:${REMOTE_DIR}/ ATTENTION: NE PAS METTRE .enst.fr"
-echo ""
-echo " Verify:      python3 cpu_load/client.py ${PORT}"
-echo " Team sync:   python3 cpu_load/client.py ${PORT} --sync ${NFS_HOST}"
-echo "================================================="
+echo -e ""
+
+
+# ── Final Report ──────────────────────────────────────────────────────────────
+echo -e "================================================="
+echo -e " Deployment complete."
+echo -e ""
+echo -e " machines.txt stored on: ${NFS_HOST}:${REMOTE_DIR}/"
+echo -e " ATTENTION: NE PAS METTRE .enst.fr"
+echo -e ""
+echo -e " Verify:      python3 cpu_load/client.py ${PORT}"
+echo -e " Team sync:   python3 cpu_load/client.py ${PORT} --sync ${NFS_HOST}"
+echo -e "================================================="
+
+exit 0

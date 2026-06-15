@@ -8,16 +8,18 @@ Usage:
   python3 client.py [port]               use local machines.txt
   python3 client.py [port] --sync HOST   fetch machines.txt from HOST:/tmp/slr207-group1/
 """
+import os
 import socket
 import subprocess
 import sys
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 args = sys.argv[1:]
 PORT = 54321
 DO_SYNC = False
-SYNC_HOST = None          # host from which to fetch machines.txt
+SYNC_HOST = None          
 
 if args and not args[0].startswith('--'):
     PORT = int(args.pop(0))
@@ -34,34 +36,44 @@ if '--sync' in args:
 
 SRC_PATH = Path(__file__).resolve().parent.parent
 MACHINES_FILE = SRC_PATH / "runtime" / "machines.txt"
-TIMEOUT = 5   # seconds per TCP connection attempt
+REMOTE_USER = os.environ.get("USER", "unknown")
+TIMEOUT = 5   
 SCP_OPTS = [
     '-4',
     '-o', 'StrictHostKeyChecking=no',
-    '-o', 'ConnectTimeout=10',
+    '-o', 'ConnectTimeout=5',
     '-o', 'BatchMode=yes',
     '-o', 'LogLevel=ERROR',
 ]
 
+# ── Colors ────────────────────────────────────────────────────────────────────
+NC = "\033[0m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+RED = "\033[31m"
+
 
 # ── Sync from /tmp ────────────────────────────────────────────────────────────
 def sync_machines(host: str) -> None:
-    """Fetch machines.txt from HOST:/tmp/slr207-group1/machines.txt."""
-    remote_path = f'{host}:/tmp/slr207-group1/machines.txt'
-    print(f'[SYNC] Fetching machines.txt from {remote_path} ...')
+    """Fetch machines.txt from HOST:/tmp/slr207-group1-$USER/machines.txt."""
+    remote_path = f'{host}:/tmp/slr207-group1-{REMOTE_USER}/machines.txt'
+    
+    print("=================================================")
+    print(f" Syncing machines.txt from {host}                ")
+    print("=================================================")
+    print("")
+    print(f"    Fetching from {remote_path} ... ", end="", flush=True)
 
     result = subprocess.run(
-        ['scp'] + SCP_OPTS + [remote_path, MACHINES_FILE],
+        ['scp'] + SCP_OPTS + [remote_path, str(MACHINES_FILE)],
         capture_output=True,
     )
     if result.returncode == 0:
-        print(f'[SYNC] OK — got machines.txt from {host}\n')
+        print(f"{GREEN}[OK]{NC}\n")
     else:
-        print('[SYNC] Failed to fetch machines.txt.')
-        print('       Possible causes:')
-        print('         • SSH key not set up on that machine')
-        print('         • Machine is unreachable')
-        print(f'       Proceeding with local {MACHINES_FILE} (may be stale).\n')
+        print(f"{RED}[FAILED]{NC}")
+        print("    Proceeding with local machines.txt (may be stale).\n")
+    print("")
 
 
 # ── Per-node TCP query ────────────────────────────────────────────────────────
@@ -99,49 +111,52 @@ def main() -> None:
         with open(MACHINES_FILE) as f:
             machines = [line.strip() for line in f if line.strip()]
     except FileNotFoundError:
-        print(f'Error: {MACHINES_FILE} not found.')
-        print('  Deploy first:  ./deploy.sh <port>')
-        print('  Or sync:       python3 client.py <port> --sync')
+        print(f'{RED}Error: {MACHINES_FILE} not found.{NC}')
         sys.exit(1)
 
     total = len(machines)
-    print(f'Connecting to {total} machines on port {PORT}...\n')
+    
+    print("=================================================")
+    print(f" Querying Cluster Load on port {PORT}            ")
+    print("=================================================")
+    print("")
 
+    # Query in parallel to avoid blocking sequential effect
     raw = []
-    for m in machines:
-        raw.append(query(m))
-        print(f"Done: {m}")
-        import time
-        time.sleep(0.5)
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        raw = list(executor.map(query, machines))
 
     # Sort: reachable nodes first (alphabetical), unreachable at the bottom
     raw.sort(key=lambda r: (r[1] is None, r[0]))
 
     results, failed = [], []
     for host, l1, l5, l15 in raw:
+        print(f"    Checking {host:<25} ", end="", flush=True)
         if l1 is None:
             failed.append(host)
-            print(f'  {host:<35} UNREACHABLE')
+            print(f"{RED}[UNREACHABLE]{NC}")
         else:
             results.append((host, l1, l5, l15))
-            print(f'  {host:<35} load: {l1:.2f}  {l5:.2f}  {l15:.2f}')
+            print(f"{GREEN}[ONLINE]{NC}  ({l1:.2f}  {l5:.2f}  {l15:.2f})")
 
     n = len(results)
-    print(f'\n{"=" * 55}')
-    print(f'  Nodes responded: {n}/{total}')
+    print("")
+    print("=================================================")
+    print(f" Final Report                                    ")
+    print("=================================================")
+    print("")
+    print(f"    Nodes responded: {n}/{total}")
 
     if n > 0:
         a1  = sum(r[1] for r in results) / n
         a5  = sum(r[2] for r in results) / n
         a15 = sum(r[3] for r in results) / n
-        print(f'  Avg cluster load  1 min : {a1:.4f}')
-        print(f'  Avg cluster load  5 min : {a5:.4f}')
-        print(f'  Avg cluster load 15 min : {a15:.4f}')
+        print(f"    Avg cluster load  1 min : {a1:.4f}")
+        print(f"    Avg cluster load  5 min : {a5:.4f}")
+        print(f"    Avg cluster load 15 min : {a15:.4f}")
 
-    print('=' * 55)
-
-    if failed:
-        print(f'\n  Unreachable ({len(failed)}): {", ".join(failed)}')
+    print("")
+    print("=================================================")
 
 
 if __name__ == '__main__':
