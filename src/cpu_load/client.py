@@ -6,9 +6,8 @@ cluster-wide averages (1, 5, 15 min).
 
 Usage:
   python3 client.py [port]               use local machines.txt
-  python3 client.py [port] --sync HOST   fetch machines.txt from HOST:/tmp/slr207-group1/
+  python3 client.py [port] --sync HOST   fetch machines.txt from HOST:/tmp/slr207-group1-bis/
 """
-import os
 import socket
 import subprocess
 import sys
@@ -34,9 +33,8 @@ if '--sync' in args:
         print('Usage: python3 client.py [port] --sync HOST')
         sys.exit(1)
 
-SRC_PATH = Path(__file__).resolve().parent.parent
-MACHINES_FILE = SRC_PATH / "runtime" / "machines.txt"
-REMOTE_USER = os.environ.get("USER", "unknown")
+LOCAL_MACHINES_FILE = str(Path(__file__).resolve().parent.parent.parent / "runtime" / "machines.txt")
+REMOTE_MACHINES_FILE = '/tmp/slr207-group1-bis/machines.txt'
 TIMEOUT = 5   
 SCP_OPTS = [
     '-4',
@@ -55,20 +53,18 @@ RED = "\033[31m"
 
 # ── Sync from /tmp ────────────────────────────────────────────────────────────
 def sync_machines(host: str) -> None:
-    """Fetch machines.txt from HOST:/tmp/slr207-group1-$USER/machines.txt."""
-    remote_path = f'{host}:/tmp/slr207-group1-{REMOTE_USER}/machines.txt'
-    
     print("=================================================")
     print(f" Syncing machines.txt from {host}                ")
     print("=================================================")
     print("")
-    print(f"    Fetching from {remote_path} ... ", end="", flush=True)
+    print(f"    Fetching from {REMOTE_MACHINES_FILE} ... ", end="", flush=True)
 
     result = subprocess.run(
-        ['scp'] + SCP_OPTS + [remote_path, str(MACHINES_FILE)],
+        ['scp'] + SCP_OPTS + [f'{host}:{REMOTE_MACHINES_FILE}', LOCAL_MACHINES_FILE],
         capture_output=True,
-    )
-    if result.returncode == 0:
+    ).returncode
+
+    if result == 0:
         print(f"{GREEN}[OK]{NC}\n")
     else:
         print(f"{RED}[FAILED]{NC}")
@@ -108,10 +104,10 @@ def main() -> None:
         sync_machines(SYNC_HOST)
 
     try:
-        with open(MACHINES_FILE) as f:
+        with open(LOCAL_MACHINES_FILE) as f:
             machines = [line.strip() for line in f if line.strip()]
     except FileNotFoundError:
-        print(f'{RED}Error: {MACHINES_FILE} not found.{NC}')
+        print(f'{RED}Error: {LOCAL_MACHINES_FILE} not found.{NC}')
         sys.exit(1)
 
     total = len(machines)

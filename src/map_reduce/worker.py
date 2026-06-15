@@ -3,24 +3,16 @@ import socket
 import json
 import sys
 import signal
-import importlib.util
-import os
+import importlib
 
-sys.stdout.reconfigure(line_buffering=True)
-sys.stderr.reconfigure(line_buffering=True)
-
-PORT = 54321
+PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 54321
 
 def load_user_function(module_name: str, func_name: str):
-    """Charge dynamiquement une fonction depuis un fichier python local."""
-    file_path = f"{module_name}.py"
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"Le module utilisateur {file_path} est introuvable sur le worker.")
-        
-    spec = importlib.util.spec_from_file_location(module_name, file_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return getattr(module, func_name)
+    try:
+        module = importlib.import_module(module_name)
+        return getattr(module, func_name)
+    except ModuleNotFoundError:
+        raise FileNotFoundError(f"Le module utilisateur '{module_name}.py' est introuvable au même niveau.")
 
 def handle_client(conn):
     buffer = b""
@@ -39,16 +31,14 @@ def handle_client(conn):
         request = json.loads(buffer.decode('utf-8').strip())
         task_type = request.get("task")
         data = request.get("data")
-        job_name = request.get("job_name") # Nom du fichier contenant les fonctions (ex: "wordcount")
+        job_name = request.get("job_name")
         
         if task_type == "MAP":
-            # Chargement dynamique de la fonction mapper de l'utilisateur
             user_map = load_user_function(job_name, "mapper")
             result = user_map(data)
             response = {"status": "OK", "result": result}
             
         elif task_type == "REDUCE":
-            # Chargement dynamique de la fonction reducer de l'utilisateur
             user_reduce = load_user_function(job_name, "reducer")
             result = user_reduce(data["key"], data["values"])
             response = {"status": "OK", "result": result}
@@ -66,7 +56,7 @@ def handle_client(conn):
 
 def main():
     srv = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-    srv.setsockopt(socket.IPPROTO_IPC6, socket.IPV6_V6ONLY, 0)
+    srv.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(('::', PORT))
     srv.listen(64)

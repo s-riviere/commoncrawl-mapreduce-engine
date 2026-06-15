@@ -10,8 +10,7 @@ import sys
 from pathlib import Path
 
 API_URL = "https://tp.telecom-paris.fr/ajax.php" 
-SRC_PATH = Path(__file__).resolve().parent.parent
-MACHINES_FILE = SRC_PATH / "runtime" / "machines.txt"
+MACHINES_FILE = Path(__file__).resolve().parent.parent.parent / "runtime" / "machines.txt"
 
 def main():
     print(f"Querying school API: {API_URL}")

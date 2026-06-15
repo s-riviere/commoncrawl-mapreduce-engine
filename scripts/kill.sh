@@ -3,11 +3,15 @@
 # ==============================================================================
 # DESCRIPTION
 # ==============================================================================
-# Stop all load servers we own and clean up.
-# Uses fuser -k on the port: reliably kills any process (ours) 
-# listening there, even orphaned ones from previous deploys.
+# Stop all processes we own and clean up.
+# Finds the process listening on the specified port, terminates it gracefully 
+# (SIGTERM), then forcefully (SIGKILL) if it persists. Cleans remote directories.
+#
+# Arguments:
+#   [port]  : Network port number to clear (default: 54321).
 #
 # Usage : ./kill.sh [port]
+# ==============================================================================
 
 
 # ==============================================================================
@@ -22,17 +26,8 @@ RED="\e[31m"
 # Failure behavior
 set -uo pipefail
 
-# Set the current directory to the root of the project (src/)
-CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-while [[ "$(basename "$CURRENT_DIR")" != "src" && "$CURRENT_DIR" != "/" ]]; do
-    CURRENT_DIR="$(dirname "$CURRENT_DIR")"
-done
-
-if [[ "$CURRENT_DIR" == "/" ]]; then
-    echo -e "${RED}Erreur critique : Impossible de localiser le dossier racine 'src'.${NC}" >&2
-    exit 1
-fi
-cd "$CURRENT_DIR"
+# Set the current directory to the root of the project
+cd "$(dirname "$0")/.."
 
 
 # ==============================================================================
@@ -45,7 +40,10 @@ PORT="${1:-54321}"
 # CONTENT
 # ==============================================================================
 MACHINES_FILE="runtime/machines.txt"
+REMOTE_LOCAL_DIR="/tmp/slr207-group1-bis"
+REMOTE_NFS_DIR="~/slr207-group1-bis"
 TIMEOUT=5
+SLEEP=0.3
 SSH_OPTS="-4 \
   -o StrictHostKeyChecking=no \
   -o BatchMode=yes \
@@ -54,8 +52,7 @@ SSH_OPTS="-4 \
 kill_server() {
     local host="$1"
     timeout $TIMEOUT ssh -n $SSH_OPTS "$host" \
-    "rm -rf /tmp/slr207-group1-$USER
-    rm -f ~/server.py
+    "rm -rf ${REMOTE_LOCAL_DIR} ${REMOTE_NFS_DIR}
 
     pid=\$(fuser ${PORT}/tcp 2>/dev/null | tr -dc '0-9')
 
@@ -77,13 +74,9 @@ fi
 
 # ── Stopping servers ──────────────────────────────────────────────────────────
 echo -e "================================================="
-echo -e " Stopping servers on port ${PORT}.                 "
+echo -e " Stopping servers on port ${PORT}.               "
 echo -e "================================================="
 echo -e ""
-
-source "common/bench.sh"
-bench_init
-bench_start cleanup
 
 declare -a PIDS=()
 
@@ -103,14 +96,12 @@ while IFS= read -r host; do
     ) &
     PIDS+=($!)
 
-    sleep 0.1
+    sleep "$SLEEP"
 done < "$MACHINES_FILE"
 
 for pid in "${PIDS[@]}"; do
     wait "$pid"
 done
-
-bench_end cleanup
 
 echo -e ""
 
@@ -119,7 +110,5 @@ echo -e ""
 echo -e "================================================="
 echo -e " All clean.                                      "
 echo -e "================================================="
-
-bench_report
 
 exit 0

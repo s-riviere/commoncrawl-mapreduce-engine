@@ -4,7 +4,10 @@ cluster.py — Gestion des machines, des arguments et de la synchronisation.
 """
 import sys
 import subprocess
+from pathlib import Path
 
+LOCAL_MACHINES_FILE = str(Path(__file__).resolve().parent.parent.parent / "runtime" / "machines.txt")
+REMOTE_MACHINES_FILE = '/tmp/slr207-group1-bis/machines.txt'
 SCP_OPTS = [
     '-4',
     '-o', 'StrictHostKeyChecking=no',
@@ -39,28 +42,30 @@ def parse_arguments(args: list) -> tuple[str, int, str | None]:
             
     return job_name, port, sync_host
 
-def sync_machines(host: str, filename: str) -> None:
+def sync_machines(host: str) -> None:
     """Récupère le fichier des machines depuis l'hôte distant via SCP."""
-    remote_path = f'{host}:/tmp/slr207-group1/{filename}'
-    print(f'[SYNC] Fetching {filename} from {remote_path} ...')
+    print(f"[SYNC] Fetching from {REMOTE_MACHINES_FILE} ... ", end="", flush=True)
 
     result = subprocess.run(
-        ['scp'] + SCP_OPTS + [remote_path, filename],
+        ['scp'] + SCP_OPTS + [f'{host}:{REMOTE_MACHINES_FILE}', LOCAL_MACHINES_FILE],
         capture_output=True,
-    )
-    if result.returncode == 0:
-        print(f'[SYNC] OK — got {filename} from {host}\n')
-    else:
-        print(f'[SYNC] Failed to fetch {filename}. Proceeding with local file.\n')
+    ).returncode
 
-def load_machines(sync_host: str | None, filename: str) -> list[str]:
+    if result == 0:
+        print('[OK]')
+    else:
+        print('[FAILED]')
+        print("    Proceeding with local machines.txt (may be stale).\n")
+    print("")
+
+def load_machines(sync_host: str | None) -> list[str]:
     """Lit le fichier et retourne la liste des adresses des machines."""
     if sync_host:
-        sync_machines(sync_host, filename)
+        sync_machines(sync_host)
 
     try:
-        with open(filename) as f:
+        with open(LOCAL_MACHINES_FILE) as f:
             return [line.strip() for line in f if line.strip()]
     except FileNotFoundError:
-        print(f'Error: {filename} not found.')
+        print(f'Error: {LOCAL_MACHINES_FILE} not found.')
         sys.exit(1)

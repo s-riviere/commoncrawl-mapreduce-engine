@@ -1,206 +1,145 @@
-# MapReduce — Challenge 1 : charge CPU distribuée
+# Distributed Computing Project (SLR)
 
-## Description
+Ce depot contient deux workflows principaux sur les machines TP Telecom Paris:
 
-Déploiement d'un serveur de charge CPU sur les machines des salles TP de
-Télécom Paris, collecte de la charge (`loadavg`) de chaque nœud depuis un
-client, et calcul de la charge moyenne du cluster.
+- Challenge CPU load: deploiement d'un serveur TCP minimal sur plusieurs noeuds, puis collecte parallele des load averages.
+- Mini framework MapReduce: deploiement de workers generiques, execution d'un job dynamique (ex: wordcount).
 
-## Configuration initiale
+Le README precedent etait centre sur un ancien workflow; cette version decrit le comportement actuel du code present dans le depot.
 
-A la racine du fichier, tapez la commande suivante pour setup pyproject :
-```
+## Vue d'ensemble
+
+1. scripts/deploy.sh
+   - Selectionne des machines via src/common/get_machines.py.
+   - Uploade les fichiers necessaires (NFS + /tmp) sur un hote reachable.
+   - Lance un process distant sur chaque machine de runtime/machines.txt.
+   - Supporte deux types de deploiement: cpu_load et wordcount.
+2. scripts/kill.sh
+   - Tue les process qui ecoutent sur le port cible.
+   - Supprime les repertoires distants /tmp/slr207-group1-bis et ~/slr207-group1-bis.
+3. Clients
+   - src/cpu_load/client.py pour requeter la charge CPU.
+   - src/map_reduce/master.py pour orchestrer MAP -> SHUFFLE -> REDUCE.
+
+## Prerequis
+
+1. Compte Telecom Paris actif et acces SSH sur les machines TP.
+2. Connexion au reseau campus (API + SSH).
+3. Cle SSH configuree sur les machines TP.
+4. Python 3.10+ recommande.
+
+Installation locale:
+
+```bash
 pip install -e .
 ```
 
-Dans `~/.ssh/config`, ajoutez ceci :
-```
+Exemple de config SSH:
+
+```sshconfig
 Host tp-*
-  User rdeloye-24 // A remplacer par votre identifiant
+  User <votre_login>
   PreferredAuthentications publickey
-  IdentityFile "~/.ssh/telecom_paris" // A remplacer par votre clé
+  IdentityFile ~/.ssh/<votre_cle>
 ```
 
-## Architecture
+## Workflow A - Charge CPU distribuee
 
-```
-  get_machines.py  ──HTTP──► https://tp.telecom-paris.fr/ajax.php
-                             filtre les machines alive et libres
-      │
-      ▼
-  machines.txt               (top 50 machines les moins chargées)
-      │
-      ▼
-  deploy.sh  ──scp──► 1 machine TP : upload server.py (NFS ~/),
-                       machines.txt vers /tmp/slr207-group1/
-             ──ssh (parallèle)──► toutes les machines TP,
-                                   lance nohup python3 ~/server.py
-      │
-      ▼
-  (déploiement terminé, hostname de la machine /tmp affiché)
-      │
-      ▼
-  client.py  ──scp --sync──► récupère machines.txt depuis /tmp/slr207-group1/
-             ──TCP séquentiel──► tous les serveurs vivants
-                                lit /proc/loadavg, affiche par nœud +
-                                moyennes globales (1, 5, 15 min)
-      │
-      ▼
-  kill.sh    ──ssh──► machines TP : fuser + kill PID sur le port,
-                      supprime server.py et .server.pid de /tmp/slr207-group1/
-```
+### 1) Deployer les serveurs
 
-Le code serveur est sur le **home NFS** (`~/server.py`), visible depuis toutes
-les machines. Seul `machines.txt` est stocké dans `/tmp/slr207-group1/` (disque
-local d'une machine).
-
-## Fichiers
-
-| Fichier | Rôle |
-|---------|------|
-| `get_machines.py` | Interroge l'API Télécom Paris, sélectionne les 50 machines les plus libres, écrit `machines.txt` |
-| `machines.txt` | Liste dynamique des machines cibles (générée automatiquement) |
-| `server.py` | Écoute TCP sur le port choisi, envoie `load1 load5 load15` |
-| `client.py` | Interroge en parallèle toutes les machines, affiche les stats. Supporte `--sync` pour récupérer `machines.txt` depuis `/tmp` |
-| `deploy.sh` | Phase 0 : appelle `get_machines.py`. Phase 1 : upload `server.py` via NFS (`~/`) et `machines.txt` vers `/tmp/slr207-group1/` sur une machine. Phase 2 : lance le serveur en parallèle sur toutes les machines |
-| `kill.sh` | Trouve le PID via `fuser <port>/tcp`, envoie SIGTERM puis SIGKILL, nettoie `/tmp/slr207-group1/` |
-| `.editorconfig` | Force les fins de ligne LF pour éviter les problèmes CRLF sous Windows/WSL |
-
-## Pré-requis
-
-1. **Compte Télécom Paris** actif.
-2. **Connexion au Wi-Fi campus** (nécessaire pour l'API et l'accès SSH direct).
-3. **Clé SSH** copiée sur les machines TP :
-   ```bash
-   ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
-   ssh-copy-id -i ~/.ssh/id_ed25519.pub <login>@tp-1a201-01.enst.fr
-   ```
-
-## Utilisation
-
-### Déployer (une seule personne du groupe)
 ```bash
-./deploy.sh           # port 54321 par défaut
-./deploy.sh 54555     # port personnalisé
+./scripts/deploy.sh cpu_load
+./scripts/deploy.sh cpu_load 54555
 ```
 
-Sortie typique :
-```
-=================================================
- Phase 0: Fetching Alive Machines from API
-=================================================
-  → 50 machines loaded from machines.txt
+Le script:
 
-=================================================
- Phase 1: Parallel Deployment
-=================================================
-[1/2] Syncing server.py + machines.txt to local disk on a lab machine...
-      Trying tp-1a201-04.enst.fr                ... [OK]
-[2/2] Bootstrapping cluster processes...
-  [STARTED] -> tp-1a201-04.enst.fr
-  [STARTED] -> tp-1a201-07.enst.fr
-  ...
-=================================================
- Deployment complete.
+- Genere/rafraichit la liste des machines.
+- Uploade src/cpu_load/server.py et runtime/machines.txt.
+- Lance worker serveur sur toutes les machines en parallele.
 
- machines.txt stored on: tp-1a201-04.enst.fr:/tmp/slr207-group1/
+### 2) Interroger le cluster
 
- Verify:      python3 client.py 54321
- Team sync:   python3 client.py 54321 --sync tp-1a201-04.enst.fr
-=================================================
-```
+Depuis la machine qui a deploye:
 
-### Interroger le cluster
-
-**Depuis la machine du déployeur :**
 ```bash
-python3 client.py              # utilise le machines.txt local + port 54321
-python3 client.py 54555        # port personnalisé
+python3 src/cpu_load/client.py
+python3 src/cpu_load/client.py 54555
 ```
 
-**Depuis la machine d'un autre membre (sync) :**
+Depuis un autre poste (avec sync du machines.txt):
+
 ```bash
-python3 client.py 54321 --sync tp-1a201-04.enst.fr
+python3 src/cpu_load/client.py 54321 --sync <host_reference>
 ```
 
-Cela récupère `machines.txt` depuis `/tmp/slr207-group1/` de la machine
-indiquée, puis interroge tous les serveurs.
+Le client effectue les requetes en parallele (ThreadPoolExecutor), affiche les noeuds joignables/non joignables, puis les moyennes cluster 1/5/15 min.
 
-Sortie :
-```
-Connecting to 50 machines on port 54321...
+### 3) Nettoyer
 
-  tp-1a201-04.enst.fr         load: 0.00  0.00  0.00
-  tp-1a201-07.enst.fr         load: 0.02  0.01  0.00
-  ...
-=======================================================
-  Nodes responded: 48/50
-  Avg cluster load  1 min : 0.0124
-  Avg cluster load  5 min : 0.0098
-  Avg cluster load 15 min : 0.0067
-=======================================================
-```
-
-### Arrêter et nettoyer
 ```bash
-./kill.sh
+./scripts/kill.sh
+./scripts/kill.sh 54555
 ```
 
-- Trouve le PID écoutant sur le port via `fuser`, puis envoie SIGTERM + SIGKILL.
-- Supprime `server.py` et `.server.pid` de `/tmp/slr207-group1/` sur chaque
-  machine.
+## Workflow B - MapReduce (job dynamique)
 
-## Protocole
+### 1) Deployer les workers
 
-Très simple : 1 connexion TCP = 1 réponse.
-
-```
-client  ─── TCP connect ────► serveur
-client  ◄── "l1 l5 l15\n" ─── serveur
-        (connexion fermée côté serveur)
+```bash
+./scripts/deploy.sh wordcount
+./scripts/deploy.sh wordcount 55000
 ```
 
-- `l1`, `l5`, `l15` : floats, charge moyenne sur 1 / 5 / 15 minutes
-  (lus depuis `/proc/loadavg`, exactement comme `uptime`).
-- Port par défaut : **54321** (plage haute, peu susceptible de conflit).
+Le deploiement wordcount uploade:
 
-## Choix techniques / bonnes pratiques
+- src/map_reduce/worker.py
+- src/map_reduce/wordcount.py
 
-- **Stockage hybride** : `server.py` sur le home NFS (`~/`), visible depuis
-  toutes les machines. `machines.txt` sur le disque local (`/tmp/slr207-group1/`)
-  d'une machine de référence.
-- **Génération dynamique** de `machines.txt` via l'API : pas de liste statique
-  à maintenir, détecte automatiquement les machines allumées et libres.
-- **Port élevé** (`54321`) : pas de conflit avec services système (< 1024) ni
-  ports classiques.
-- **`SO_REUSEADDR`** : permet de relancer le serveur rapidement après kill.
-- **Déploiement parallèle** : lance les serveurs sur toutes les machines en
-  parallèle via des sous-shells SSH.
-- **`--sync` dans le client** : permet à tout membre du groupe de récupérer
-  `machines.txt` depuis `/tmp` d'une machine lab sans avoir à re-déployer.
-- **IPv4 forcé** (`-4`) : évite les bugs de résolution IPv6 sous WSL2.
-- **`BatchMode=yes` + `ConnectTimeout`** : les scripts échouent vite sur une
-  machine injoignable au lieu de bloquer.
-- **Côté client, interrogation séquentielle** avec délai de 0.5s entre chaque
-  requête pour éviter le rate-limiting SSH côté serveur.
-- **`.editorconfig`** : force LF pour éviter les problèmes CRLF qui cassent
-  les scripts shell sous WSL/Linux.
+Puis lance worker.py sur chaque machine cible.
 
-## Respect de l'infrastructure partagée
+### 2) Lancer un job depuis le master
 
-- Le serveur est **minuscule** (quasi idle). Il ne consomme rien : juste un
-  `accept()` bloquant.
-- **Pas d'orchestrateur central** ni de nœud maître — simple pattern
-  client/serveur sans état.
-- **Cleanup systématique** via `./kill.sh` : ne laisse aucun processus
-  orphelin ni fichier sur les machines.
-- **Limite raisonnable** (50 machines) ; pas de scan agressif du parc.
+```bash
+python3 src/map_reduce/master.py wordcount
+python3 src/map_reduce/master.py wordcount 55000
+python3 src/map_reduce/master.py wordcount 55000 --sync <host_reference>
+```
 
-## Limitations connues
+Le master:
 
-- Nécessite une connexion au Wi-Fi campus pour accéder à l'API et aux
-  machines.
-- Serveur mono-thread : `accept()` séquentiel suffit pour le protocole
-  (quelques connexions courtes).
-- Pas de chiffrement applicatif : la charge CPU n'est pas sensible, et le
-  trafic transite sur le réseau interne ENST.
+- Distribue des taches MAP (texte -> paires cle/valeur).
+- Realise le SHUFFLE localement.
+- Distribue des taches REDUCE.
+- Affiche le resultat final trie.
+
+### 3) Nettoyer les workers
+
+```bash
+./scripts/kill.sh 55000
+```
+
+## Protocoles reseau
+
+CPU load (src/cpu_load/server.py):
+
+- 1 connexion TCP -> 1 ligne "load1 load5 load15\n" puis fermeture.
+- Socket IPv6 dual-stack, SO_REUSEADDR active.
+
+MapReduce (src/map_reduce/worker.py):
+
+- 1 connexion TCP -> 1 payload JSON termine par \n.
+- Format: {"task": "MAP|REDUCE", "job_name": "module", "data": ...}
+- Reponse JSON: {"status": "OK|ERROR", "result"|"message": ...}
+
+## Fichiers importants
+
+- scripts/deploy.sh: pipeline de deploiement multi-type (cpu_load/wordcount).
+- scripts/kill.sh: cleanup distant par port.
+- src/common/get_machines.py: collecte API Telecom et generation de machines.txt.
+- src/cpu_load/server.py: serveur de loadavg.
+- src/cpu_load/client.py: client parallele + option --sync.
+- src/map_reduce/worker.py: worker generique chargeant dynamiquement un module job.
+- src/map_reduce/master.py: orchestration MAP/SHUFFLE/REDUCE.
+- src/map_reduce/wordcount.py: exemple de job.
+- src/common/bench.py et scripts/bench.sh: instrumentation timing.

@@ -7,11 +7,11 @@ Usage:
 
 Examples:
   python3 download_commoncrawl.py --num-files 5
-  python3 download_commoncrawl.py --output-dir /tmp/slr207-group1/input --num-files 10
+  python3 download_commoncrawl.py --output-dir /tmp/slr207-group1-bis/input --num-files 10
   python3 download_commoncrawl.py --crawl CC-MAIN-2024-10 --num-files 3
 
 After downloading, use the output directory as input for map.py:
-  python3 map.py main /tmp/slr207-group1/input <n_workers>
+  python3 map.py main /tmp/slr207-group1-bis/input <n_workers>
 """
 
 import argparse
@@ -21,8 +21,8 @@ import os
 import urllib.request
 
 BASE_URL = "https://data.commoncrawl.org/"
-DEFAULT_OUTPUT_DIR = "/tmp/slr207-group1/input"
-DEFAULT_DATA_DIR = "/tmp/slr207-group1/data"
+DEFAULT_OUTPUT_DIR = "/tmp/slr207-group1-bis/input"
+DEFAULT_DATA_DIR = "/tmp/slr207-group1-bis/data"
 DEFAULT_CRAWL = "CC-MAIN-2024-10"
 
 
