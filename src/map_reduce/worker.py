@@ -48,6 +48,9 @@ def handle_client(conn: socket.socket) -> None:
         task_type = request.get("task")
         data      = request.get("data")
         job_name  = request.get("job_name")
+        # Allow callers to pass bare name (e.g. "wordcount") or full name
+        if job_name and "." not in job_name:
+            job_name = f"map_reduce.{job_name}"
 
         if task_type == "MAP":
             user_map = load_user_function(job_name, "mapper")
