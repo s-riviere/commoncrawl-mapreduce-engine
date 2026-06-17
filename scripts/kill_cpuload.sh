@@ -40,10 +40,12 @@ PORT="${1:-54321}"
 # CONTENT
 # ==============================================================================
 MACHINES_FILE="runtime/machines.txt"
-REMOTE_LOCAL_DIR="/tmp/slr207-group1-bis"
-REMOTE_NFS_DIR="~/slr207-group1-bis"
-TIMEOUT=5
-SLEEP=0.3
+
+DIR_NAME="slr207-group1"
+NFS_DIR="~/${DIR_NAME}"
+TMP_DIR="/tmp/${DIR_NAME}"
+
+SLEEP=0.5
 SSH_OPTS="-4 \
   -o StrictHostKeyChecking=no \
   -o BatchMode=yes \
@@ -51,8 +53,8 @@ SSH_OPTS="-4 \
 
 kill_server() {
     local host="$1"
-    timeout $TIMEOUT ssh -n $SSH_OPTS "$host" \
-    "rm -rf ${REMOTE_LOCAL_DIR} ${REMOTE_NFS_DIR}
+    timeout 5 ssh -n $SSH_OPTS "$host" \
+    "rm -rf ${TMP_DIR} ${NFS_DIR}
 
     pid=\$(fuser ${PORT}/tcp 2>/dev/null | tr -dc '0-9')
 

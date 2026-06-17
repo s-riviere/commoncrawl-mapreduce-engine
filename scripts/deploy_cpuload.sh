@@ -8,14 +8,12 @@
 # Then SSH-starts one server process per machine in machines.txt.
 #
 # Arguments:
-#   [type]  : Type of job to deploy (cpu_load, wordcount).
 #   [port]  : Network port number for the server process to listen on.
 #
-# Usage : ./deploy.sh [type] [port]
+# Usage : ./deploy.sh [port]
 #
 # Examples:
-#   ./deploy.sh cpu_load 9090
-#   ./deploy.sh wordcount 5000
+#   ./deploy.sh 54321
 # ==============================================================================
 
 
@@ -38,33 +36,20 @@ cd "$(dirname "$0")/.."
 # ==============================================================================
 # ARGUMENTS
 # ==============================================================================
-TYPE="${1:-cpu_load}"
-PORT="${2:-54321}"
-
-case "$TYPE" in
-    "cpu_load")
-        FILES_TO_UPLOAD=("src/cpu_load/server.py")
-        SCRIPT_TO_START="server.py"
-        ;;
-    "wordcount")
-        FILES_TO_UPLOAD=("src/map_reduce/worker.py" "src/map_reduce/wordcount.py")
-        SCRIPT_TO_START="worker.py"
-        ;;
-    *)
-        echo -e "${RED}Erreur : Type de job inconnu '$TYPE'. Valeurs valides : cpu_load, wordcount${NC}" >&2
-        exit 1
-        ;;
-esac
+PORT="${1:-54321}"
+N_WORKERS=50
 
 
 # ==============================================================================
 # CONTENT
 # ==============================================================================
-GET_MACHINES_SCRIPT="src/common/get_machines.py"
 MACHINES_FILE="runtime/machines.txt"
-REMOTE_LOCAL_DIR="/tmp/slr207-group1-bis"
-REMOTE_NFS_DIR="~/slr207-group1-bis"
-TIMEOUT=5
+FILES_TO_UPLOAD=("src/cpu_load/server.py")
+
+DIR_NAME="slr207-group1"
+NFS_DIR="~/${DIR_NAME}"
+TMP_DIR="/tmp/${DIR_NAME}"
+
 SLEEP=0.5
 SSH_OPTS="-4 \
   -o StrictHostKeyChecking=no \
@@ -75,16 +60,16 @@ SSH_OPTS="-4 \
 
 upload_to_host() {
     local host="$1"
-    timeout $TIMEOUT ssh -n $SSH_OPTS "$host" "mkdir -p ${REMOTE_LOCAL_DIR}; chmod 777 ${REMOTE_LOCAL_DIR}" && \
-    timeout $TIMEOUT scp $SSH_OPTS "$MACHINES_FILE" "${host}:${REMOTE_LOCAL_DIR}/" && \
-    timeout $TIMEOUT ssh -n $SSH_OPTS "$host" "mkdir -p ${REMOTE_NFS_DIR}" && \
-    timeout $TIMEOUT scp $SSH_OPTS "${FILES_TO_UPLOAD[@]}" "${host}:${REMOTE_NFS_DIR}/"
+    timeout 5 ssh -n $SSH_OPTS "$host" "mkdir -p ${TMP_DIR}; chmod 777 ${TMP_DIR}" && \
+    timeout 5 scp $SSH_OPTS "$MACHINES_FILE" "${host}:${TMP_DIR}/" && \
+    timeout 5 ssh -n $SSH_OPTS "$host" "mkdir -p ${NFS_DIR}" && \
+    timeout 5 scp $SSH_OPTS "${FILES_TO_UPLOAD[@]}" "${host}:${NFS_DIR}/"
 }
 
 start_server() {
     local host="$1"
-    timeout $TIMEOUT ssh -n $SSH_OPTS "$host" \
-    "nohup python3 ${REMOTE_NFS_DIR}/${SCRIPT_TO_START} ${PORT} > /dev/null 2>&1 & 
+    timeout 5 ssh -n $SSH_OPTS "$host" \
+    "nohup python3 ${NFS_DIR}/server.py ${PORT} > /dev/null 2>&1 & 
     sleep 1
     if ss -tln | grep -q \":${PORT} \"; then
         echo ok
@@ -100,16 +85,11 @@ echo -e " Phase 0: Fetching Alive Machines from API       "
 echo -e "================================================="
 echo -e ""
 
-python3 "$GET_MACHINES_SCRIPT"
-
-if [[ ! -f "$MACHINES_FILE" ]]; then
-    echo -e "${RED}Error : No $MACHINES_FILE found.${NC}" >&2
-    exit 1
-fi
+mkdir -p "$(dirname "$MACHINES_FILE")"
+bash scripts/get_machines.sh -n "${N_WORKERS}" > "$MACHINES_FILE" || exit 1
 
 echo -e ""
-echo -e "$(wc -l < "$MACHINES_FILE") machines loaded."
-echo -e ""
+
 
 # ── Phase 1: NFS upload (one SCP is enough — home dir is shared) ──────────────
 echo -e "================================================="

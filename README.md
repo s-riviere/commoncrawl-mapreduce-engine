@@ -16,7 +16,7 @@ Le README precedent etait centre sur un ancien workflow; cette version decrit le
    - Supporte deux types de deploiement: cpu_load et wordcount.
 2. scripts/kill.sh
    - Tue les process qui ecoutent sur le port cible.
-   - Supprime les repertoires distants /tmp/slr207-group1-bis et ~/slr207-group1-bis.
+   - Supprime les repertoires distants /tmp/slr207-group1 et ~/slr207-group1.
 3. Clients
    - src/cpu_load/client.py pour requeter la charge CPU.
    - src/map_reduce/master.py pour orchestrer MAP -> SHUFFLE -> REDUCE.
