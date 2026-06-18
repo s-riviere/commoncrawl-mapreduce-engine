@@ -1,209 +1,249 @@
 #!/usr/bin/env python3
+
+# ==============================================================================
+# DESCRIPTION
+# ==============================================================================
+# MapReduce worker process.
+# Connects to the master, executes MAP and REDUCE tasks, and writes outputs.
+#
+# Arguments:
+#   -h, --host           : Master hostname or IP.
+#   -p, --port           : Master listening port.
+#   -i, --input-dir      : Shared input directory containing split files.
+#   -o, --output-dir     : Shared output directory for reduce results.
+#   -l, --local-map-dir  : Local directory for intermediate MAP partitions.
+#
+# Usage :
+#   python3 src/map_reduce/worker.py -h <host> -p <port> -i <input> -o <output> -l <local_map>
+#
+# Examples:
+#   python3 src/map_reduce/worker.py -h tp-1a201-02.enst.fr -p 54321 -i ~/slr207-group1-bis/input -o ~/slr207-group1-bis/output -l /tmp/slr207-group1-bis/map-outputs
+# ==============================================================================
+
 import argparse
-import os
-import socket
-import json
 import collections
-import subprocess
+import json
+import os
 import shutil
+import socket
+import subprocess
 import time
 import zlib
 
 
+STATUS_READY_FOR_TASK = "READY_FOR_TASK"
+STATUS_TASK_FINISHED = "TASK_FINISHED"
+
+TASK_MAP = "MAP"
+TASK_REDUCE = "REDUCE"
+TASK_WAIT = "WAIT"
+
+
 def log(level, message):
+    """Print timestamped log message with worker label."""
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] [WORKER] [{level}] {message}", flush=True)
 
 
-def clean_local_dir():
-    """Nettoie le répertoire local /tmp pour éviter les interférences entre jobs."""
-    log("INFO", f"Cleaning local map directory: {LOCAL_MAP_DIR}")
-    if os.path.exists(LOCAL_MAP_DIR):
-        shutil.rmtree(LOCAL_MAP_DIR)
-    os.makedirs(LOCAL_MAP_DIR, exist_ok=True)
-    log("INFO", f"Local map directory ready: {LOCAL_MAP_DIR}")
+def send_json_line(sock, payload):
+    """Helper to send JSON-encoded messages over socket."""
+    sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
 
-def execute_map(task):
-    split_id = task["split_id"]
-    n_reducers = task["n_reducers"]
-    
-    file_name = f"commoncrawl-{split_id:04d}.txt"
-    file_path = os.path.join(INPUT_DIR, file_name)
-    
-    log("INFO", f"MAP start split={split_id} reducers={n_reducers} input={file_path}")
-    
-    if not os.path.exists(file_path):
-        log("ERROR", f"Input split missing: {file_path}")
-        return
 
-    os.makedirs(LOCAL_MAP_DIR, exist_ok=True)
+class MapReduceWorker:
+    """Encapsulates worker process state and lifecycle."""
 
-    partition_files = {}
-    try:
-        # 1. On ouvre TOUS les fichiers de partitions en mode "append" dès le départ
-        for r_id in range(n_reducers):
-            p_path = os.path.join(LOCAL_MAP_DIR, f"partition_{r_id}.txt")
-            partition_files[r_id] = open(p_path, "a", encoding="utf-8")
+    def __init__(self, host, port, input_dir, output_dir, local_map_dir):
+        """Initialize worker with connection and directory parameters."""
+        self.host = host
+        self.port = port
+        self.input_dir = os.path.expanduser(input_dir)
+        self.output_dir = os.path.expanduser(output_dir)
+        self.local_map_dir = os.path.expanduser(local_map_dir)
+        self.socket = None
+        self.buffer = ""
 
-        # 2. Lecture et écriture simultanée au fil de l'eau
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            for line_count, line in enumerate(f):
-                for word in line.split():
-                    if word.isalnum():
-                        key = word.lower()
-                        h = zlib.crc32(key.encode()) % n_reducers
-                        partition_files[h].write(f"{key}\t1\n")
+    def _clean_local_dir(self):
+        """Reset local MAP partitions directory between runs."""
+        log("INFO", f"Cleaning local map directory: {self.local_map_dir}")
+        if os.path.exists(self.local_map_dir):
+            shutil.rmtree(self.local_map_dir)
+        os.makedirs(self.local_map_dir, exist_ok=True)
+        log("INFO", f"Local map directory ready: {self.local_map_dir}")
 
-                # Forcer l'écriture sur disque toutes les 50k lignes
-                if line_count % 50000 == 0:
-                    for f_out in partition_files.values():
-                        f_out.flush()
+    def _send_json_line(self, payload):
+        """Send JSON-encoded message to master."""
+        send_json_line(self.socket, payload)
 
-    finally:
-        # 3. Fermeture impérative de tous les descripteurs de fichiers (même en cas d'erreur)
-        for f_out in partition_files.values():
-            f_out.close()
-
-    log("INFO", f"MAP done split={split_id} local_dir={LOCAL_MAP_DIR}")
-
-def execute_reduce(task):
-    reducer_id = task["reducer_id"]
-    map_workers = task["map_workers"]
-
-    log("INFO", f"REDUCE start reducer={reducer_id} map_workers={len(map_workers)}")
-    
-    all_values = collections.defaultdict(int)
-    ssh_opts = "-o StrictHostKeyChecking=no -o BatchMode=yes -o LogLevel=ERROR"
-    
-    # SHUFFLE : Récupération des fichiers intermédiaires depuis les /tmp des autres machines
-    for worker_ip in map_workers:
-        if worker_ip.startswith("::ffff:"):
-            worker_ip = worker_ip.replace("::ffff:", "")
+    def _execute_map(self, task):
+        """Execute MAP task: partition input file and write local partition files."""
+        split_id = task["split_id"]
+        n_reducers = task["n_reducers"]
         
-        remote_partition = os.path.join(LOCAL_MAP_DIR, f"partition_{reducer_id}.txt")
-        cmd = f"ssh {ssh_opts} {worker_ip} 'cat {remote_partition}'"
-        log("DEBUG", f"REDUCE reducer={reducer_id} fetching partition from {worker_ip}:{remote_partition}")
+        file_name = f"commoncrawl-{split_id:04d}.txt"
+        file_path = os.path.join(self.input_dir, file_name)
         
+        log("INFO", f"MAP start split={split_id} reducers={n_reducers} input={file_path}")
+        
+        if not os.path.exists(file_path):
+            log("ERROR", f"Input split missing: {file_path}")
+            return
+
+        os.makedirs(self.local_map_dir, exist_ok=True)
+
+        partition_files = {}
         try:
-            # Popen permet de lire le flux de sortie standard en continu
-            proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            # Open partition files once, then stream input lines and dispatch each word.
+            for reducer_id in range(n_reducers):
+                partition_path = os.path.join(self.local_map_dir, f"partition_{reducer_id}.txt")
+                partition_files[reducer_id] = open(partition_path, "a", encoding="utf-8")
+
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                for line_count, line in enumerate(f):
+                    for word in line.split():
+                        if word.isalnum():
+                            key = word.lower()
+                            reducer_id = zlib.crc32(key.encode()) % n_reducers
+                            partition_files[reducer_id].write(f"{key}\t1\n")
+
+                    # Periodic flush keeps progress visible and limits buffered data.
+                    if line_count % 50000 == 0:
+                        for f_out in partition_files.values():
+                            f_out.flush()
+
+        finally:
+            # Always close opened file descriptors, even on failures.
+            for f_out in partition_files.values():
+                f_out.close()
+
+        log("INFO", f"MAP done split={split_id} local_dir={self.local_map_dir}")
+
+    def _execute_reduce(self, task):
+        """Execute REDUCE task: shuffle partitions and aggregate word counts."""
+        reducer_id = task["reducer_id"]
+        map_workers = task["map_workers"]
+
+        log("INFO", f"REDUCE start reducer={reducer_id} map_workers={len(map_workers)}")
+        
+        final_counts = collections.defaultdict(int)
+        ssh_opts = "-o StrictHostKeyChecking=no -o BatchMode=yes -o LogLevel=ERROR"
+        
+        # SHUFFLE: fetch this reducer partition from every MAP worker.
+        for worker_ip in map_workers:
+            if worker_ip.startswith("::ffff:"):
+                worker_ip = worker_ip.replace("::ffff:", "", 1)
             
-            # Lecture ligne par ligne depuis le flux réseau SSH
-            for line in proc.stdout:
-                if not line.strip():
-                    continue
-                k, v = line.split("\t", 1)
-                all_values[k] += int(v)
+            remote_partition = os.path.join(self.local_map_dir, f"partition_{reducer_id}.txt")
+            cmd = f"ssh {ssh_opts} {worker_ip} 'cat {remote_partition}'"
+            
+            try:
+                # Popen allows streaming stdout line-by-line as it arrives from remote
+                proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
                 
-            proc.wait(timeout=5)
-            if proc.returncode != 0:
-                log("WARN", f"REDUCE reducer={reducer_id} ssh failed host={worker_ip} code={proc.returncode}")
-                
+                # Read line-by-line from SSH stream and aggregate into counts
+                for line in proc.stdout:
+                    if not line.strip():
+                        continue
+                    k, v = line.split("\t", 1)
+                    final_counts[k] += int(v)
+                    
+                proc.wait(timeout=5)
+                if proc.returncode != 0:
+                    log("WARN", f"REDUCE reducer={reducer_id} ssh failed host={worker_ip} code={proc.returncode}")
+                    
+            except Exception as e:
+                log("ERROR", f"REDUCE reducer={reducer_id} shuffle error host={worker_ip}: {e}")
+
+        # Publish final reducer output to the shared directory.
+        os.makedirs(self.output_dir, exist_ok=True)
+        output_file_path = os.path.join(self.output_dir, f"part-{reducer_id}.txt")
+        
+        with open(output_file_path, "w", encoding="utf-8") as f:
+            for key, total in sorted(final_counts.items(), key=lambda x: x[1], reverse=True):
+                f.write(f"{key}\t{total}\n")
+
+        log("INFO", f"REDUCE done reducer={reducer_id} output={output_file_path}")
+
+    def run(self):
+        """Main worker loop: connect, get tasks, execute, report completion."""
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            self.socket.connect((self.host, self.port))
+            log("INFO", f"Connected to master {self.host}:{self.port}")
         except Exception as e:
-            log("ERROR", f"REDUCE reducer={reducer_id} shuffle error host={worker_ip}: {e}")
+            log("ERROR", f"Failed to connect to master {self.host}:{self.port}: {e}")
+            return
 
-    final_counts = all_values
+        self._clean_local_dir()
+        self.buffer = ""
 
-    log("DEBUG", f"REDUCE reducer={reducer_id} unique_keys={len(final_counts)}")
-
-    # Publication finale sur le NFS partagé
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    output_file_path = os.path.join(OUTPUT_DIR, f"part-{reducer_id}.txt")
-    
-    with open(output_file_path, "w", encoding="utf-8") as f:
-        for key, total in sorted(final_counts.items(), key=lambda x: x[1], reverse=True):
-            f.write(f"{key}\t{total}\n")
-
-    log("INFO", f"REDUCE done reducer={reducer_id} output={output_file_path}")
-
-def main_loop(host, port):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        s.connect((host, port))
-        log("INFO", f"Connected to master {host}:{port}")
-    except Exception as e:
-        log("ERROR", f"Failed to connect to master {host}:{port}: {e}")
-        return
-
-    clean_local_dir()
-    buffer = ""
-
-    while True:
-        # Demande d'une nouvelle tâche
-        ready_msg = {"status": "READY_FOR_TASK"}
-        log("DEBUG", "Sending READY_FOR_TASK")
-        s.sendall((json.dumps(ready_msg) + "\n").encode('utf-8'))
-        
-        task_line = None
         while True:
-            data = s.recv(4096).decode('utf-8')
-            if not data:
-                log("WARN", "Master connection closed while waiting for task")
-                break
-            buffer += data
-            if "\n" in buffer:
-                task_line, buffer = buffer.split("\n", 1)
-                break
-        
-        if not task_line:
-            log("WARN", "No task received, stopping worker loop")
-            break
+            ready_msg = {"status": STATUS_READY_FOR_TASK}
+            self._send_json_line(ready_msg)
             
-        task = json.loads(task_line)
-        task_type = task.get("type")
-        log("INFO", f"Received task type={task_type}")
-        
-        if task_type == "MAP":
-            execute_map(task)
-            notification = {"status": "TASK_FINISHED"}
-            s.sendall((json.dumps(notification) + "\n").encode('utf-8'))
-            log("DEBUG", "Sent TASK_FINISHED for MAP, waiting ACK")
-            ack = s.recv(1024)  # Attente de l'ACK du Master
-            if ack:
-                log("DEBUG", f"Received ACK bytes={len(ack)}")
-            else:
-                log("WARN", "Master closed connection before ACK after MAP")
+            task_line = None
+            while True:
+                data = self.socket.recv(4096).decode('utf-8')
+                if not data:
+                    log("WARN", "Master connection closed while waiting for task")
+                    break
+                self.buffer += data
+                if "\n" in self.buffer:
+                    task_line, self.buffer = self.buffer.split("\n", 1)
+                    break
+            
+            if not task_line:
+                log("WARN", "No task received, stopping worker loop")
                 break
+                
+            task = json.loads(task_line)
+            task_type = task.get("type")
+            log("INFO", f"Received task type={task_type}")
             
-        elif task_type == "REDUCE":
-            execute_reduce(task)
-            notification = {"status": "TASK_FINISHED"}
-            s.sendall((json.dumps(notification) + "\n").encode('utf-8'))
-            log("DEBUG", "Sent TASK_FINISHED for REDUCE, waiting ACK")
-            ack = s.recv(1024)  # Attente de l'ACK du Master
-            if ack:
-                log("DEBUG", f"Received ACK bytes={len(ack)}")
-            else:
-                log("WARN", "Master closed connection before ACK after REDUCE")
-                break
-            
-        elif task_type == "WAIT":
-            log("DEBUG", "Received WAIT from master, sleeping 2s")
-            time.sleep(2)
-            buffer = ""  # Clear buffer to avoid processing stale data
-            
-        elif task_type == "SHUTDOWN":
-            log("INFO", "Received SHUTDOWN from master")
-            break
+            if task_type == TASK_MAP:
+                self._execute_map(task)
+                notification = {"status": STATUS_TASK_FINISHED}
+                self._send_json_line(notification)
+                ack = self.socket.recv(1024)
+                if not ack:
+                    log("WARN", "Master closed connection before ACK after MAP")
+                    break
+                
+            elif task_type == TASK_REDUCE:
+                self._execute_reduce(task)
+                notification = {"status": STATUS_TASK_FINISHED}
+                self._send_json_line(notification)
+                ack = self.socket.recv(1024)
+                if not ack:
+                    log("WARN", "Master closed connection before ACK after REDUCE")
+                    break
+                
+            elif task_type == TASK_WAIT:
+                time.sleep(2)
+                # Defensive reset: avoid stale fragments if the sender interleaves bursts.
+                self.buffer = ""
 
-        else:
-            log("WARN", f"Unknown task type received: {task_type}")
+            else:
+                log("WARN", f"Unknown task type received: {task_type}")
 
-    s.close()
-    log("INFO", "Worker process exiting")
+        self.socket.close()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MapReduce Worker", add_help=False)
-    parser.add_argument("-h", "--host", required=True, metavar="HOST", help="Adresse IP ou hostname du Master")
-    parser.add_argument("-p", "--port", required=True, type=int, metavar="PORT", help="Port d'écoute du Master")
-    parser.add_argument("-i", "--input-dir", required=True, metavar="DIR", help="Dossier d'entrée des splits")
-    parser.add_argument("-o", "--output-dir", required=True, metavar="DIR", help="Dossier de sortie des reducers")
-    parser.add_argument("-l", "--local-map-dir", required=True, metavar="DIR", help="Dossier local des sorties intermédiaires Map")
-    parser.add_argument("--help", action="help", help="Afficher ce message d'aide et quitter")
+    parser.add_argument("-h", "--host", required=True, metavar="HOST", help="Master IP address or hostname")
+    parser.add_argument("-p", "--port", required=True, type=int, metavar="PORT", help="Master listening port")
+    parser.add_argument("-i", "--input-dir", required=True, metavar="DIR", help="Shared input directory for splits")
+    parser.add_argument("-o", "--output-dir", required=True, metavar="DIR", help="Shared output directory for reduce results")
+    parser.add_argument("-l", "--local-map-dir", required=True, metavar="DIR", help="Local directory for MAP intermediate partitions")
+    parser.add_argument("--help", action="help", help="Show this help message and exit")
     args = parser.parse_args()
 
-    INPUT_DIR = os.path.expanduser(args.input_dir)
-    OUTPUT_DIR = os.path.expanduser(args.output_dir)
-    LOCAL_MAP_DIR = os.path.expanduser(args.local_map_dir)
-
-    main_loop(args.host, args.port)
+    worker = MapReduceWorker(
+        host=args.host,
+        port=args.port,
+        input_dir=args.input_dir,
+        output_dir=args.output_dir,
+        local_map_dir=args.local_map_dir
+    )
+    worker.run()

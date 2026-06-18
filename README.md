@@ -1,32 +1,57 @@
 # Distributed Computing Project (SLR)
 
-Ce depot contient deux workflows principaux sur les machines TP Telecom Paris:
+Projet de calcul distribué sur les machines de TP Telecom Paris avec deux workflows principaux:
 
-- Challenge CPU load: deploiement d'un serveur TCP minimal sur plusieurs noeuds, puis collecte parallele des load averages.
-- Mini framework MapReduce: deploiement de workers generiques, execution d'un job dynamique (ex: wordcount).
+1. CPU Load: déploiement d'un serveur TCP minimal sur plusieurs noeuds, puis interrogation parallèle des load averages.
+2. CommonCrawl + MapReduce: pipeline MAP/SHUFFLE/REDUCE distribué pour compter les mots sur des splits CommonCrawl.
 
-Le README precedent etait centre sur un ancien workflow; cette version decrit le comportement actuel du code present dans le depot.
+Ce README décrit l'état actuel du dépôt et les scripts utilisés en pratique.
 
-## Vue d'ensemble
+## Table des matières
 
-1. scripts/deploy.sh
-   - Selectionne des machines via src/common/get_machines.py.
-   - Uploade les fichiers necessaires (NFS + /tmp) sur un hote reachable.
-   - Lance un process distant sur chaque machine de runtime/machines.txt.
-   - Supporte deux types de deploiement: cpu_load et wordcount.
-2. scripts/kill.sh
-   - Tue les process qui ecoutent sur le port cible.
-   - Supprime les repertoires distants /tmp/slr207-group1 et ~/slr207-group1.
-3. Clients
-   - src/cpu_load/client.py pour requeter la charge CPU.
-   - src/map_reduce/master.py pour orchestrer MAP -> SHUFFLE -> REDUCE.
+- [Distributed Computing Project (SLR)](#distributed-computing-project-slr)
+  - [Table des matières](#table-des-matières)
+  - [1) Vue d'ensemble](#1-vue-densemble)
+  - [2) Prérequis](#2-prérequis)
+  - [3) Structure du dépôt](#3-structure-du-dépôt)
+  - [4) Workflow A - CPU Load](#4-workflow-a---cpu-load)
+    - [4.1 Objectif](#41-objectif)
+    - [4.2 Déploiement](#42-déploiement)
+    - [4.3 Interrogation du cluster](#43-interrogation-du-cluster)
+    - [4.4 Arrêt et nettoyage](#44-arrêt-et-nettoyage)
+    - [4.5 Protocole réseau CPU Load](#45-protocole-réseau-cpu-load)
+  - [5) Workflow B - CommonCrawl + MapReduce](#5-workflow-b---commoncrawl--mapreduce)
+    - [5.1 Objectif](#51-objectif)
+    - [5.2 Déploiement complet](#52-déploiement-complet)
+    - [5.3 Ce que fait le script de déploiement](#53-ce-que-fait-le-script-de-déploiement)
+    - [5.4 Téléchargement CommonCrawl](#54-téléchargement-commoncrawl)
+    - [5.5 Cycle d'exécution MapReduce](#55-cycle-dexécution-mapreduce)
+    - [5.6 Détails de traitement](#56-détails-de-traitement)
+  - [6) Chemins de données et stockage](#6-chemins-de-données-et-stockage)
+  - [7) Protocole de messages MapReduce](#7-protocole-de-messages-mapreduce)
+  - [8) Observabilité et logs](#8-observabilité-et-logs)
+  - [9) Performance et bench](#9-performance-et-bench)
+  - [10) Limites et choix techniques](#10-limites-et-choix-techniques)
 
-## Prerequis
+## 1) Vue d'ensemble
 
-1. Compte Telecom Paris actif et acces SSH sur les machines TP.
-2. Connexion au reseau campus (API + SSH).
-3. Cle SSH configuree sur les machines TP.
-4. Python 3.10+ recommande.
+Le projet est organisé autour de scripts shell qui automatisent le déploiement sur des machines distantes accessibles en SSH.
+
+- Sélection des machines: [scripts/get_machines.sh](scripts/get_machines.sh)
+- Déploiement CPU Load: [scripts/deploy_cpuload.sh](scripts/deploy_cpuload.sh)
+- Arrêt/cleanup CPU Load: [scripts/kill_cpuload.sh](scripts/kill_cpuload.sh)
+- Déploiement CommonCrawl + MapReduce: [scripts/deploy_commoncrawl.sh](scripts/deploy_commoncrawl.sh)
+- Outils de bench shell: [scripts/bench.sh](scripts/bench.sh)
+
+Le pipeline MapReduce actif est dans [src/map_reduce](src/map_reduce): master/worker et utilitaires CommonCrawl.
+
+## 2) Prérequis
+
+1. Compte Telecom Paris actif avec accès SSH aux machines de TP.
+2. Connexion réseau campus (API et SSH).
+3. Clé SSH configurée pour accès non interactif.
+4. Python 3.10+ recommandé.
+5. Outils shell usuels: ssh, scp, timeout, curl, jq.
 
 Installation locale:
 
@@ -34,7 +59,7 @@ Installation locale:
 pip install -e .
 ```
 
-Exemple de config SSH:
+Configuration SSH:
 
 ```sshconfig
 Host tp-*
@@ -43,103 +68,223 @@ Host tp-*
   IdentityFile ~/.ssh/<votre_cle>
 ```
 
-## Workflow A - Charge CPU distribuee
+## 3) Structure du dépôt
 
-### 1) Deployer les serveurs
+```text
+scripts/
+  deploy_cpuload.sh         # déploiement parallèle CPU Load
+  kill_cpuload.sh           # arrêt + nettoyage distant CPU Load
+  deploy_commoncrawl.sh     # déploiement complet CommonCrawl + MapReduce
+  get_machines.sh           # sélection des meilleures machines via API
+  bench.sh                  # instrumentation timing shell
+
+src/
+  cpu_load/
+    server.py               # serveur TCP renvoyant load averages
+    client.py               # client parallèle + rapport agrégat
+  map_reduce/
+    master.py               # master utilisé en déploiement CommonCrawl
+    worker.py               # worker utilisé en déploiement CommonCrawl
+    download_commoncrawl.py # téléchargement WET en splits texte
+
+runtime/
+  machines.txt              # liste des machines cibles
+
+doc/
+  fault_tolerance/
+  map_reduce/
+  guidelines/
+```
+
+## 4) Workflow A - CPU Load
+
+### 4.1 Objectif
+
+Démarrer un petit serveur TCP sur plusieurs machines et collecter la charge CPU moyenne (1/5/15 min) en parallèle.
+
+### 4.2 Déploiement
 
 ```bash
-./scripts/deploy.sh cpu_load
-./scripts/deploy.sh cpu_load 54555
+bash scripts/deploy_cpuload.sh
+bash scripts/deploy_cpuload.sh 54555
 ```
 
 Le script:
 
-- Genere/rafraichit la liste des machines.
-- Uploade src/cpu_load/server.py et runtime/machines.txt.
-- Lance worker serveur sur toutes les machines en parallele.
+1. Génère [runtime/machines.txt](runtime/machines.txt) via [scripts/get_machines.sh](scripts/get_machines.sh).
+2. Uploade [src/cpu_load/server.py](src/cpu_load/server.py) sur NFS distant.
+3. Démarre un serveur par machine en parallèle.
 
-### 2) Interroger le cluster
-
-Depuis la machine qui a deploye:
+### 4.3 Interrogation du cluster
 
 ```bash
 python3 src/cpu_load/client.py
 python3 src/cpu_load/client.py 54555
+python3 src/cpu_load/client.py 54555 --sync <host_reference>
 ```
 
-Depuis un autre poste (avec sync du machines.txt):
+Le client:
+
+- Interroge les noeuds en parallèle (ThreadPoolExecutor).
+- Affiche noeuds joignables/non joignables.
+- Calcule les moyennes cluster sur 1/5/15 minutes.
+
+### 4.4 Arrêt et nettoyage
 
 ```bash
-python3 src/cpu_load/client.py 54321 --sync <host_reference>
+bash scripts/kill_cpuload.sh
+bash scripts/kill_cpuload.sh 54555
 ```
 
-Le client effectue les requetes en parallele (ThreadPoolExecutor), affiche les noeuds joignables/non joignables, puis les moyennes cluster 1/5/15 min.
+Le cleanup:
 
-### 3) Nettoyer
+- Tue le process écoutant sur le port cible.
+- Supprime les répertoires distants utilisés par le workflow CPU Load.
+
+### 4.5 Protocole réseau CPU Load
+
+- Connexion TCP vers un worker.
+- Réponse texte unique: "load1 load5 load15" puis fermeture.
+
+## 5) Workflow B - CommonCrawl + MapReduce
+
+### 5.1 Objectif
+
+Exécuter un wordcount distribué sur des fichiers CommonCrawl split en mode MAP/SHUFFLE/REDUCE.
+
+### 5.2 Déploiement complet
 
 ```bash
-./scripts/kill.sh
-./scripts/kill.sh 54555
+bash scripts/deploy_commoncrawl.sh
+bash scripts/deploy_commoncrawl.sh -p 60000 -w 8 -r 8 -s 20
 ```
 
-## Workflow B - MapReduce (job dynamique)
+Paramètres principaux:
 
-### 1) Deployer les workers
+- -p: port master (défaut 54321)
+- -w: nombre de workers (défaut 10)
+- -r: nombre de reducers (défaut 10)
+- -s: nombre de splits CommonCrawl cibles (défaut 10)
 
-```bash
-./scripts/deploy.sh wordcount
-./scripts/deploy.sh wordcount 55000
-```
+### 5.3 Ce que fait le script de déploiement
 
-Le deploiement wordcount uploade:
+1. Récupère N+1 machines (1 master + N workers).
+2. Uploade [src/map_reduce/master.py](src/map_reduce/master.py), [src/map_reduce/worker.py](src/map_reduce/worker.py), [src/map_reduce/download_commoncrawl.py](src/map_reduce/download_commoncrawl.py) vers NFS distant.
+3. Vérifie le stock de splits et télécharge seulement les manquants si nécessaire.
+4. Démarre le master (unbuffered, logs redirigés).
+5. Démarre les workers en parallèle.
+6. Stream les logs master en direct jusqu'à la fin du job.
+7. Quand le master se termine (fin normale) ou est tué, les workers détectent la fermeture de la socket et s'arrêtent automatiquement.
 
-- src/map_reduce/worker.py
-- src/map_reduce/wordcount.py
+### 5.4 Téléchargement CommonCrawl
 
-Puis lance worker.py sur chaque machine cible.
+Le téléchargement transforme les WET gzip en fichiers texte locaux nommés:
 
-### 2) Lancer un job depuis le master
+- commoncrawl-0000.txt
+- commoncrawl-0001.txt
+- ...
 
-```bash
-python3 src/map_reduce/master.py wordcount
-python3 src/map_reduce/master.py wordcount 55000
-python3 src/map_reduce/master.py wordcount 55000 --sync <host_reference>
-```
+Le mode --missing-only évite de retoucher les splits déjà présents.
 
-Le master:
+### 5.5 Cycle d'exécution MapReduce
 
-- Distribue des taches MAP (texte -> paires cle/valeur).
-- Realise le SHUFFLE localement.
-- Distribue des taches REDUCE.
-- Affiche le resultat final trie.
+1. Worker envoie READY_FOR_TASK.
+2. Master assigne MAP, REDUCE ou WAIT.
+3. Worker exécute la tâche.
+4. Worker envoie TASK_FINISHED.
+5. Master répond ACK.
 
-### 3) Nettoyer les workers
+Note: les workers n'ont pas besoin d'un script d'arrêt dédié dans ce workflow. Ils se terminent automatiquement lorsque le master ferme sa connexion (ou si le master est tué).
 
-```bash
-./scripts/kill.sh 55000
-```
+### 5.6 Détails de traitement
 
-## Protocoles reseau
+- MAP:
+  - Lecture d'un split commun depuis NFS.
+  - Tokenisation simple (mots alphanumériques en lowercase).
+  - Partitionnement par reducer via crc32(word) % n_reducers.
+  - Écriture intermédiaire locale dans /tmp.
 
-CPU load (src/cpu_load/server.py):
+- SHUFFLE:
+  - Un reducer va chercher sa partition chez chaque map worker via SSH et cat.
 
-- 1 connexion TCP -> 1 ligne "load1 load5 load15\n" puis fermeture.
-- Socket IPv6 dual-stack, SO_REUSEADDR active.
+- REDUCE:
+  - Agrégation en mémoire des couples (mot, count).
+  - Tri par fréquence décroissante.
+  - Écriture finale dans le dossier output partagé.
 
-MapReduce (src/map_reduce/worker.py):
+## 6) Chemins de données et stockage
 
-- 1 connexion TCP -> 1 payload JSON termine par \n.
-- Format: {"task": "MAP|REDUCE", "job_name": "module", "data": ...}
-- Reponse JSON: {"status": "OK|ERROR", "result"|"message": ...}
+Variables utilisées dans [scripts/deploy_commoncrawl.sh](scripts/deploy_commoncrawl.sh):
 
-## Fichiers importants
+- NFS_DIR: ~/slr207-group1
+- NFS_INPUT_DIR: ~/slr207-group1/input
+- NFS_OUTPUT_DIR: ~/slr207-group1/output
+- LOCAL_MAP_DIR: /tmp/slr207-group1/map-outputs
+- REMOTE_LOG_DIR: /tmp/slr207-group1/logs/<timestamp>
 
-- scripts/deploy.sh: pipeline de deploiement multi-type (cpu_load/wordcount).
-- scripts/kill.sh: cleanup distant par port.
-- src/common/get_machines.py: collecte API Telecom et generation de machines.txt.
-- src/cpu_load/server.py: serveur de loadavg.
-- src/cpu_load/client.py: client parallele + option --sync.
-- src/map_reduce/worker.py: worker generique chargeant dynamiquement un module job.
-- src/map_reduce/master.py: orchestration MAP/SHUFFLE/REDUCE.
-- src/map_reduce/wordcount.py: exemple de job.
-- src/common/bench.py et scripts/bench.sh: instrumentation timing.
+Modèle de stockage:
+
+- Input CommonCrawl: NFS partagé.
+- Intermédiaires MAP: disque local /tmp de chaque worker.
+- Output REDUCE: NFS partagé.
+- Logs: /tmp distant, par run timestamp.
+
+## 7) Protocole de messages MapReduce
+
+Transport:
+
+- TCP socket.
+- Messages JSON délimités par fin de ligne \n.
+
+Worker vers Master:
+
+- {"status": "READY_FOR_TASK"}
+- {"status": "TASK_FINISHED"}
+
+Master vers Worker:
+
+- {"type": "MAP", "split_id": i, "n_reducers": r}
+- {"type": "WAIT"}
+- {"type": "REDUCE", "reducer_id": j, "map_workers": [...]}
+- {"status": "ACK"}
+
+Note:
+
+- Le déploiement CommonCrawl actif s'appuie sur [src/map_reduce](src/map_reduce).
+
+## 8) Observabilité et logs
+
+Logging applicatif:
+
+- Master et worker loggent avec timestamp et niveau.
+- Le déploiement CommonCrawl force python3 -u pour éviter la mise en buffer des logs.
+
+Monitoring en live:
+
+- [scripts/deploy_commoncrawl.sh](scripts/deploy_commoncrawl.sh) suit les logs master via tail -f.
+- Le suivi s'arrête automatiquement à la fin du process master.
+
+Conseil pratique:
+
+- En cas d'échec partiel, récupérer les logs master et worker du dossier REMOTE_LOG_DIR du run.
+
+## 9) Performance et bench
+
+Outils disponibles:
+
+- [scripts/bench.sh](scripts/bench.sh): chrono de phases shell (déploiement, upload, bootstrap, etc.).
+- [src/common/bench.py](src/common/bench.py): utilitaire Python pour instrumentation complémentaire.
+
+Mesures utiles:
+
+1. Temps total de déploiement.
+2. Temps de préparation des splits CommonCrawl.
+3. Durée MAP.
+4. Durée SHUFFLE+REDUCE.
+5. Bottleneck (réseau, SSH, NFS, machine lente).
+
+## 10) Limites et choix techniques
+
+- Le parsing CommonCrawl est volontairement simple pour rester léger (petite pollution de métadonnées possible dans les splits).
+- La robustesse réseau reste dépendante de la stabilité SSH/Wi-Fi du lab.
+- Le protocole actuel ne couvre pas encore toutes les stratégies de tolérance aux pannes (timeout/retry/reassign complets). Si un des workers échoue durant l'éxecution d'un map reduce actuel, le processus entier sera bloqué et il faudra manuellement tuer master pour recommencer.

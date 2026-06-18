@@ -103,9 +103,9 @@ fi
 
 # ── Constants and functions ─────────────────────────────────────────────
 MACHINES_FILE="runtime/machines.txt"
-FILES_TO_UPLOAD=("src/map_reduce_2/master.py" "src/map_reduce_2/worker.py" "src/map_reduce_2/download_commoncrawl.py")
+FILES_TO_UPLOAD=("src/map_reduce/master.py" "src/map_reduce/worker.py" "src/map_reduce/download_commoncrawl.py")
 
-DIR_NAME="slr207-group1"
+DIR_NAME="slr207-group1-commoncrawl"
 NFS_DIR="~/${DIR_NAME}"
 TMP_DIR="/tmp/${DIR_NAME}"
 
