@@ -183,7 +183,7 @@ def bench_run(n_workers, machines, port, n_splits, n_reducers, output_dir):
     log(f"  Master ready on port {port} — launching {n_workers} worker(s)")
     start_workers(selected, port, INPUT_DIR, output_dir, LOCAL_MAP_DIR, master_host)
     timing = collect_master(master_proc, port)
-    kill_workers(selected, port)    kill_workers(selected, port)
+    kill_workers(selected, port)    
 
     if timing:
         log(f"  N={n_workers} → total={timing['t_total']:.1f}s  map={timing['t_map']:.1f}s  reduce={timing['t_reduce']:.1f}s")
