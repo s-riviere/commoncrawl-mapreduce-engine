@@ -111,23 +111,23 @@ class MapReduceWorker:
         t_io_read = 0.0
         t_compute = 0.0
         try:
+            _t_read = time.time()
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                for line_count, line in enumerate(f):
-                    _t0 = time.time()
-                    words = line.split()
-                    t_io_read += time.time() - _t0
+                lines = f.readlines()
+            t_io_read = time.time() - _t_read
 
-                    _t1 = time.time()
-                    for word in words:
-                        if word.isalnum():
-                            key = word.lower()
-                            reducer_id = zlib.crc32(key.encode()) % n_reducers
-                            partition_files[reducer_id].write(f"{key}\t1\n")
-                    t_compute += time.time() - _t1
+            _t_compute = time.time()
+            for line_count, line in enumerate(lines):
+                for word in line.split():
+                    if word.isalnum():
+                        key = word.lower()
+                        reducer_id = zlib.crc32(key.encode()) % n_reducers
+                        partition_files[reducer_id].write(f"{key}\t1\n")
 
-                    if line_count % 50000 == 0:
-                        for f_out in partition_files.values():
-                            f_out.flush()
+                if line_count % 50000 == 0:
+                    for f_out in partition_files.values():
+                        f_out.flush()
+            t_compute = time.time() - _t_compute
         finally:
             t_write = time.time()
             for f_out in partition_files.values():
@@ -173,18 +173,17 @@ class MapReduceWorker:
             try:
                 _t0 = time.time()
                 proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-                lines_received = 0
-                for line in proc.stdout:
-                    t_shuffle += time.time() - _t0
+                raw_lines = proc.stdout.readlines()
+                t_shuffle += time.time() - _t0
+
+                _tc = time.time()
+                for line in raw_lines:
                     if not line.strip():
-                        _t0 = time.time()
                         continue
-                    _tc = time.time()
                     k, v = line.split("\t", 1)
                     final_counts[k] += int(v)
-                    lines_received += 1
-                    t_compute += time.time() - _tc
-                    _t0 = time.time()
+                t_compute += time.time() - _tc
+
                 proc.wait(timeout=30)
                 if proc.returncode != 0:
                     log("WARN", f"REDUCE reducer={reducer_id} ssh failed host={worker_ip} code={proc.returncode}")
