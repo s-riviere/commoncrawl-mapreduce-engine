@@ -50,7 +50,7 @@ DIR_NAME="slr207-group1-cpuload-${USER}"
 NFS_DIR="~/${DIR_NAME}"
 TMP_DIR="/tmp/${DIR_NAME}"
 
-SLEEP=0.5
+SLEEP=1
 SSH_OPTS="-4 \
   -o StrictHostKeyChecking=no \
   -o BatchMode=yes \
@@ -60,22 +60,24 @@ SSH_OPTS="-4 \
 
 upload_to_host() {
     local host="$1"
-    timeout 5 ssh -n $SSH_OPTS "$host" "mkdir -p ${TMP_DIR}; chmod 777 ${TMP_DIR}" && \
-    timeout 5 scp $SSH_OPTS "$MACHINES_FILE" "${host}:${TMP_DIR}/" && \
-    timeout 5 ssh -n $SSH_OPTS "$host" "mkdir -p ${NFS_DIR}" && \
-    timeout 5 scp $SSH_OPTS "${FILES_TO_UPLOAD[@]}" "${host}:${NFS_DIR}/"
+    timeout 10 ssh -n $SSH_OPTS "$host" "mkdir -p ${TMP_DIR}; chmod 777 ${TMP_DIR}" && \
+    timeout 10 scp $SSH_OPTS "$MACHINES_FILE" "${host}:${TMP_DIR}/" && \
+    timeout 10 ssh -n $SSH_OPTS "$host" "mkdir -p ${NFS_DIR}" && \
+    timeout 10 scp $SSH_OPTS "${FILES_TO_UPLOAD[@]}" "${host}:${NFS_DIR}/"
 }
 
 start_server() {
     local host="$1"
-    timeout 5 ssh -n $SSH_OPTS "$host" \
-    "nohup python3 ${NFS_DIR}/server.py ${PORT} > /dev/null 2>&1 & 
-    sleep 1
-    if ss -tln | grep -q \":${PORT} \"; then
-        echo ok
-    else
-        echo failed
-    fi" 2>/dev/null | grep -q "^ok$"
+    timeout 25 ssh -n $SSH_OPTS "$host" \
+    "nohup python3 ${NFS_DIR}/server.py ${PORT} > /dev/null 2>&1 &
+    for i in {1..15}; do
+        if ss -tln | grep -q \":${PORT} \"; then
+            echo ok
+            exit 0
+        fi
+        sleep 1
+    done
+    echo failed" 2>/dev/null | grep -q "^ok$"
 }
 
 
