@@ -62,14 +62,17 @@ class MapReduceWorker:
         self.local_map_dir = os.path.expanduser(local_map_dir)
         self.socket = None
         self.buffer = ""
+        self._t_clean = 0.0
 
     def _clean_local_dir(self):
         """Reset local MAP partitions directory between runs."""
         log("INFO", f"Cleaning local map directory: {self.local_map_dir}")
+        t0 = time.time()
         if os.path.exists(self.local_map_dir):
             shutil.rmtree(self.local_map_dir)
         os.makedirs(self.local_map_dir, exist_ok=True)
-        log("INFO", f"Local map directory ready: {self.local_map_dir}")
+        self._t_clean = time.time() - t0
+        log("INFO", f"Local map directory ready: {self.local_map_dir} ({self._t_clean:.2f}s)")
 
     def _send_json_line(self, payload):
         """Send JSON-encoded message to master."""
@@ -91,32 +94,61 @@ class MapReduceWorker:
 
         os.makedirs(self.local_map_dir, exist_ok=True)
 
+        # ── Phase: open partition files (I/O setup) ───────────────────────
+        t_io_open = time.time()
         partition_files = {}
         try:
-            # Open partition files once, then stream input lines and dispatch each word.
             for reducer_id in range(n_reducers):
                 partition_path = os.path.join(self.local_map_dir, f"partition_{reducer_id}.txt")
                 partition_files[reducer_id] = open(partition_path, "a", encoding="utf-8")
+        except Exception:
+            for f_out in partition_files.values():
+                f_out.close()
+            raise
+        t_io_open = time.time() - t_io_open
 
+        # ── Phase: read input + compute (word counting) ───────────────────
+        t_io_read = 0.0
+        t_compute = 0.0
+        try:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 for line_count, line in enumerate(f):
-                    for word in line.split():
+                    _t0 = time.time()
+                    words = line.split()
+                    t_io_read += time.time() - _t0
+
+                    _t1 = time.time()
+                    for word in words:
                         if word.isalnum():
                             key = word.lower()
                             reducer_id = zlib.crc32(key.encode()) % n_reducers
                             partition_files[reducer_id].write(f"{key}\t1\n")
+                    t_compute += time.time() - _t1
 
-                    # Periodic flush keeps progress visible and limits buffered data.
                     if line_count % 50000 == 0:
                         for f_out in partition_files.values():
                             f_out.flush()
-
         finally:
-            # Always close opened file descriptors, even on failures.
+            t_write = time.time()
             for f_out in partition_files.values():
                 f_out.close()
+            t_write = time.time() - t_write
 
-        log("INFO", f"MAP done split={split_id} local_dir={self.local_map_dir}")
+        t_map_total = getattr(self, '_t_clean', 0.0) + t_io_open + t_io_read + t_compute + t_write
+        log("INFO",
+            f"MAP done split={split_id} "
+            f"t_clean={getattr(self,'_t_clean',0):.2f}s "
+            f"t_io_read={t_io_read:.2f}s "
+            f"t_compute={t_compute:.2f}s "
+            f"t_io_write={t_write:.2f}s "
+            f"t_total={t_map_total:.2f}s")
+        print(
+            f"WORKER_TIMING: {{\"phase\":\"MAP\",\"split_id\":{split_id},"
+            f"\"t_clean\":{getattr(self,'_t_clean',0):.3f},"
+            f"\"t_io_read\":{t_io_read:.3f},"
+            f"\"t_compute\":{t_compute:.3f},"
+            f"\"t_io_write\":{t_write:.3f}}}",
+            flush=True)
 
     def _execute_reduce(self, task):
         """Execute REDUCE task: shuffle partitions and aggregate word counts."""
@@ -127,8 +159,10 @@ class MapReduceWorker:
         
         final_counts = collections.defaultdict(int)
         ssh_opts = "-o StrictHostKeyChecking=no -o BatchMode=yes -o LogLevel=ERROR"
-        
-        # SHUFFLE: fetch this reducer partition from every MAP worker.
+
+        # ── Phase: shuffle (network transfer via SSH) ─────────────────────
+        t_shuffle = 0.0
+        t_compute = 0.0
         for worker_ip in map_workers:
             if worker_ip.startswith("::ffff:"):
                 worker_ip = worker_ip.replace("::ffff:", "", 1)
@@ -137,32 +171,46 @@ class MapReduceWorker:
             cmd = f"ssh {ssh_opts} {worker_ip} 'cat {remote_partition}'"
             
             try:
-                # Popen allows streaming stdout line-by-line as it arrives from remote
+                _t0 = time.time()
                 proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-                
-                # Read line-by-line from SSH stream and aggregate into counts
+                lines_received = 0
                 for line in proc.stdout:
+                    t_shuffle += time.time() - _t0
                     if not line.strip():
+                        _t0 = time.time()
                         continue
+                    _tc = time.time()
                     k, v = line.split("\t", 1)
                     final_counts[k] += int(v)
-                    
-                proc.wait(timeout=5)
+                    lines_received += 1
+                    t_compute += time.time() - _tc
+                    _t0 = time.time()
+                proc.wait(timeout=30)
                 if proc.returncode != 0:
                     log("WARN", f"REDUCE reducer={reducer_id} ssh failed host={worker_ip} code={proc.returncode}")
-                    
             except Exception as e:
                 log("ERROR", f"REDUCE reducer={reducer_id} shuffle error host={worker_ip}: {e}")
 
-        # Publish final reducer output to the shared directory.
+        # ── Phase: write output (I/O) ─────────────────────────────────────
         os.makedirs(self.output_dir, exist_ok=True)
         output_file_path = os.path.join(self.output_dir, f"part-{reducer_id}.txt")
-        
+        t_io_write = time.time()
         with open(output_file_path, "w", encoding="utf-8") as f:
             for key, total in sorted(final_counts.items(), key=lambda x: x[1], reverse=True):
                 f.write(f"{key}\t{total}\n")
+        t_io_write = time.time() - t_io_write
 
-        log("INFO", f"REDUCE done reducer={reducer_id} output={output_file_path}")
+        log("INFO",
+            f"REDUCE done reducer={reducer_id} "
+            f"t_shuffle={t_shuffle:.2f}s "
+            f"t_compute={t_compute:.2f}s "
+            f"t_io_write={t_io_write:.2f}s")
+        print(
+            f"WORKER_TIMING: {{\"phase\":\"REDUCE\",\"reducer_id\":{reducer_id},"
+            f"\"t_shuffle\":{t_shuffle:.3f},"
+            f"\"t_compute\":{t_compute:.3f},"
+            f"\"t_io_write\":{t_io_write:.3f}}}",
+            flush=True)
 
     def run(self):
         """Main worker loop: connect, get tasks, execute, report completion."""
