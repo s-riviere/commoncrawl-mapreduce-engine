@@ -98,9 +98,21 @@ def kill_workers(machines, port):
     time.sleep(1)
 
 
+def wait_for_master(host, port, timeout=15):
+    """Poll until master TCP port is accepting connections."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=1):
+                return True
+        except OSError:
+            time.sleep(0.3)
+    return False
+
+
 def run_master(port, n_splits, n_reducers, timeout=600):
     """
-    Start the master as a subprocess, stream its output live, wait for it to finish.
+    Start master as a subprocess, stream its output live, wait for it to finish.
     Returns the parsed TIMING dict, or None on failure.
     """
     cmd = [
@@ -118,7 +130,11 @@ def run_master(port, n_splits, n_reducers, timeout=600):
         text=True,
         cwd=os.path.dirname(os.path.abspath(__file__)),
     )
+    return proc
 
+
+def collect_master(proc, port, timeout=600):
+    """Stream master output, parse TIMING line, return timing dict or None."""
     timing = None
     deadline = time.time() + timeout
 
@@ -140,7 +156,6 @@ def run_master(port, n_splits, n_reducers, timeout=600):
 
     if timing is None:
         log("  ERROR: no TIMING line found in master output.")
-
     return timing
 
 
@@ -159,9 +174,16 @@ def bench_run(n_workers, machines, port, n_splits, n_reducers, output_dir):
         except OSError:
             pass
 
+    # Start master first, wait until its port is open, then launch workers
+    master_proc = run_master(port, n_splits, n_reducers)
+    if not wait_for_master("localhost", port):
+        log("  ERROR: master port never opened — killing")
+        master_proc.kill()
+        return None
+    log(f"  Master ready on port {port} — launching {n_workers} worker(s)")
     start_workers(selected, port, INPUT_DIR, output_dir, LOCAL_MAP_DIR, master_host)
-    timing = run_master(port, n_splits, n_reducers)
-    kill_workers(selected, port)
+    timing = collect_master(master_proc, port)
+    kill_workers(selected, port)    kill_workers(selected, port)
 
     if timing:
         log(f"  N={n_workers} → total={timing['t_total']:.1f}s  map={timing['t_map']:.1f}s  reduce={timing['t_reduce']:.1f}s")
