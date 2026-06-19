@@ -78,8 +78,13 @@ def start_workers(machines, port, input_dir, output_dir, local_map_dir, master_h
         )
         proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         procs.append((host, proc))
-    # Give workers a moment to connect
-    time.sleep(3)
+        log(f"  SSH launch → {host}")
+    # Wait for all SSH launches to complete
+    for host, proc in procs:
+        proc.wait()
+        log(f"  SSH done   → {host}")
+    # Give workers a moment to connect to master
+    time.sleep(2)
     return procs
 
 
@@ -95,7 +100,7 @@ def kill_workers(machines, port):
 
 def run_master(port, n_splits, n_reducers, timeout=600):
     """
-    Start the master in-process as a subprocess, capture stdout, wait for it to finish.
+    Start the master as a subprocess, stream its output live, wait for it to finish.
     Returns the parsed TIMING dict, or None on failure.
     """
     cmd = [
@@ -115,29 +120,26 @@ def run_master(port, n_splits, n_reducers, timeout=600):
     )
 
     timing = None
-    lines = []
-    try:
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        log("  WARN: master timed out — killing")
-        proc.kill()
-        proc.wait()
+    deadline = time.time() + timeout
 
-    # Read all output
-    stdout, _ = proc.communicate() if proc.stdout else ("", "")
-    for line in (stdout or "").splitlines():
-        lines.append(line)
+    for line in proc.stdout:
+        line = line.rstrip()
+        print(f"  [MASTER] {line}", flush=True)
         m = TIMING_RE.search(line)
         if m:
             try:
                 timing = json.loads(m.group(1))
             except json.JSONDecodeError:
                 pass
+        if time.time() > deadline:
+            log("  WARN: master timed out — killing")
+            proc.kill()
+            break
+
+    proc.wait()
 
     if timing is None:
-        log("  ERROR: no TIMING line found in master output. Last 10 lines:")
-        for l in lines[-10:]:
-            log(f"    {l}")
+        log("  ERROR: no TIMING line found in master output.")
 
     return timing
 
