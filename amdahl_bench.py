@@ -66,15 +66,21 @@ def get_master_host():
     return socket.gethostname()
 
 
-def start_workers(machines, port, input_dir, output_dir, local_map_dir, master_host):
+def start_workers(machines, port, input_dir, output_dir, local_map_dir, master_host,
+                  cpp_worker=False):
     """SSH-launch one worker process per machine; return list of Popen handles."""
+    if cpp_worker:
+        worker_cmd = "src/cpp/worker"
+        worker_args = f"-h {master_host} -p {port} -i {input_dir} -o {output_dir} -l {local_map_dir}"
+    else:
+        worker_cmd = "python3 src/map_reduce/worker.py"
+        worker_args = f"-h {master_host} -p {port} -i {input_dir} -o {output_dir} -l {local_map_dir}"
     procs = []
     for host in machines:
         cmd = (
             f"ssh {SSH_OPTS} {host} "
-            f"'cd ~/proj && nohup python3 src/map_reduce/worker.py "
-            f"-h {master_host} -p {port} "
-            f"-i {input_dir} -o {output_dir} -l {local_map_dir} "
+            f"'cd ~/proj && nohup {worker_cmd} "
+            f"{worker_args} "
             f">/tmp/worker_{port}.log 2>&1 &'"
         )
         proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -89,11 +95,12 @@ def start_workers(machines, port, input_dir, output_dir, local_map_dir, master_h
     return procs
 
 
-def kill_workers(machines, port):
+def kill_workers(machines, port, cpp_worker=False):
     """Kill all worker processes on the given machines."""
+    pattern = r"worker.*-p {port}" if cpp_worker else f"worker.py.*-p {port}"
     for host in machines:
         subprocess.Popen(
-            f"ssh {SSH_OPTS} {host} 'pkill -f \"worker.py.*-p {port}\"' 2>/dev/null",
+            f"ssh {SSH_OPTS} {host} 'pkill -f \"{pattern}\"' 2>/dev/null",
             shell=True,
         )
     time.sleep(1)
@@ -179,7 +186,7 @@ def collect_worker_timings(machines, port):
     return aggregated
 
 
-def bench_run(n_workers, machines, port, n_splits, n_reducers, output_dir):
+def bench_run(n_workers, machines, port, n_splits, n_reducers, output_dir, cpp_worker=False):
     """Single benchmark run with n_workers workers."""
     selected = machines[:n_workers]
     master_host = get_master_host()
@@ -201,10 +208,11 @@ def bench_run(n_workers, machines, port, n_splits, n_reducers, output_dir):
         master_proc.kill()
         return None
     log(f"  Master ready on port {port} — launching {n_workers} worker(s)")
-    start_workers(selected, port, INPUT_DIR, output_dir, LOCAL_MAP_DIR, master_host)
+    start_workers(selected, port, INPUT_DIR, output_dir, LOCAL_MAP_DIR, master_host,
+                  cpp_worker=cpp_worker)
     timing = collect_master(master_proc, port)
     worker_timing = collect_worker_timings(selected, port)
-    kill_workers(selected, port)
+    kill_workers(selected, port, cpp_worker=cpp_worker)
 
     if timing:
         log(f"  N={n_workers} → total={timing['t_total']:.1f}s  map={timing['t_map']:.1f}s  reduce={timing['t_reduce']:.1f}s")
@@ -231,6 +239,12 @@ def main():
         default=",".join(map(str, WORKER_COUNTS)),
         help="Comma-separated list of worker counts (default: 1,2,4,8,16,32)",
     )
+    parser.add_argument(
+        "--cpp-worker",
+        action="store_true",
+        default=False,
+        help="Use compiled C++ worker (src/cpp/worker) instead of Python worker",
+    )
     args = parser.parse_args()
 
     worker_counts = [int(x) for x in args.counts.split(",")]
@@ -248,7 +262,8 @@ def main():
 
     results = []
     for n in worker_counts:
-        timing, worker_timing = bench_run(n, all_machines, args.port, args.splits, args.reducers, OUTPUT_DIR)
+        timing, worker_timing = bench_run(n, all_machines, args.port, args.splits, args.reducers, OUTPUT_DIR,
+                                             cpp_worker=args.cpp_worker)
         record = {
             "n_workers":  n,
             "n_splits":   args.splits,
