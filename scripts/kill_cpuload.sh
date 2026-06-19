@@ -41,11 +41,11 @@ PORT="${1:-54321}"
 # ==============================================================================
 MACHINES_FILE="runtime/machines.txt"
 
-DIR_NAME="slr207-group1-cpuload"
+DIR_NAME="slr207-group1-cpuload-${USER}"
 NFS_DIR="~/${DIR_NAME}"
 TMP_DIR="/tmp/${DIR_NAME}"
 
-SLEEP=0.5
+SLEEP=1
 SSH_OPTS="-4 \
   -o StrictHostKeyChecking=no \
   -o BatchMode=yes \
@@ -53,7 +53,7 @@ SSH_OPTS="-4 \
 
 kill_server() {
     local host="$1"
-    timeout 5 ssh -n $SSH_OPTS "$host" \
+    timeout 10 ssh -n $SSH_OPTS "$host" \
     "rm -rf ${TMP_DIR} ${NFS_DIR}
 
     pid=\$(fuser ${PORT}/tcp 2>/dev/null | tr -dc '0-9')
