@@ -35,7 +35,7 @@ WORKER_COUNTS         = [1, 2, 4, 8, 16, 32]
 NFS_DIR       = os.path.expanduser("~/slr207-group1-commoncrawl")
 INPUT_DIR     = f"{NFS_DIR}/input"
 OUTPUT_DIR    = f"{NFS_DIR}/output"
-LOCAL_MAP_DIR = "/tmp/slr207-group1-commoncrawl/map-outputs"
+LOCAL_MAP_DIR = f"/tmp/slr207-group1-commoncrawl-{os.getenv('USER', 'cdaou-25')}/map-outputs"
 
 SSH_OPTS = (
     "-o StrictHostKeyChecking=no "
