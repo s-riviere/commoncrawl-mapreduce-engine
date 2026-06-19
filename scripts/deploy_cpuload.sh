@@ -46,7 +46,7 @@ N_WORKERS=50
 MACHINES_FILE="runtime/machines.txt"
 FILES_TO_UPLOAD=("src/cpu_load/server.py")
 
-DIR_NAME="slr207-group1-cpuload"
+DIR_NAME="slr207-group1-cpuload-${USER}"
 NFS_DIR="~/${DIR_NAME}"
 TMP_DIR="/tmp/${DIR_NAME}"
 

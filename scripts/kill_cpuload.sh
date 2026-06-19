@@ -41,7 +41,7 @@ PORT="${1:-54321}"
 # ==============================================================================
 MACHINES_FILE="runtime/machines.txt"
 
-DIR_NAME="slr207-group1-cpuload"
+DIR_NAME="slr207-group1-cpuload-${USER}"
 NFS_DIR="~/${DIR_NAME}"
 TMP_DIR="/tmp/${DIR_NAME}"
 

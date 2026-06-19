@@ -105,7 +105,7 @@ fi
 MACHINES_FILE="runtime/machines.txt"
 FILES_TO_UPLOAD=("src/map_reduce/master.py" "src/map_reduce/worker.py" "src/map_reduce/download_commoncrawl.py")
 
-DIR_NAME="slr207-group1-commoncrawl"
+DIR_NAME="slr207-group1-commoncrawl-${USER}"
 NFS_DIR="~/${DIR_NAME}"
 TMP_DIR="/tmp/${DIR_NAME}"
 
