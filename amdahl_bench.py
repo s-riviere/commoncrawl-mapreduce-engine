@@ -45,6 +45,7 @@ SSH_OPTS = (
 )
 
 TIMING_RE = re.compile(r"TIMING:\s*(\{.*\})")
+WORKER_TIMING_RE = re.compile(r"WORKER_TIMING:\s*(\{.*\})")
 
 
 def log(msg):
@@ -159,6 +160,25 @@ def collect_master(proc, port, timeout=600):
     return timing
 
 
+def collect_worker_timings(machines, port):
+    """SSH-read worker log files and aggregate WORKER_TIMING entries."""
+    aggregated = {"t_clean": 0.0, "t_io_read": 0.0, "t_compute": 0.0,
+                  "t_io_write": 0.0, "t_shuffle": 0.0}
+    for host in machines:
+        cmd = f"ssh {SSH_OPTS} {host} 'cat /tmp/worker_{port}.log 2>/dev/null'"
+        try:
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
+            for line in result.stdout.splitlines():
+                m = WORKER_TIMING_RE.search(line)
+                if m:
+                    d = json.loads(m.group(1))
+                    for key in aggregated:
+                        aggregated[key] += d.get(key, 0.0)
+        except Exception as e:
+            log(f"  WARN: could not read worker log from {host}: {e}")
+    return aggregated
+
+
 def bench_run(n_workers, machines, port, n_splits, n_reducers, output_dir):
     """Single benchmark run with n_workers workers."""
     selected = machines[:n_workers]
@@ -183,15 +203,21 @@ def bench_run(n_workers, machines, port, n_splits, n_reducers, output_dir):
     log(f"  Master ready on port {port} — launching {n_workers} worker(s)")
     start_workers(selected, port, INPUT_DIR, output_dir, LOCAL_MAP_DIR, master_host)
     timing = collect_master(master_proc, port)
-    kill_workers(selected, port)    
+    worker_timing = collect_worker_timings(selected, port)
+    kill_workers(selected, port)
 
     if timing:
         log(f"  N={n_workers} → total={timing['t_total']:.1f}s  map={timing['t_map']:.1f}s  reduce={timing['t_reduce']:.1f}s")
+        log(f"           worker breakdown → "
+            f"clean={worker_timing['t_clean']:.1f}s  "
+            f"io_read={worker_timing['t_io_read']:.1f}s  "
+            f"compute={worker_timing['t_compute']:.1f}s  "
+            f"shuffle={worker_timing['t_shuffle']:.1f}s  "
+            f"io_write={worker_timing['t_io_write']:.1f}s")
     else:
         log(f"  N={n_workers} → FAILED")
 
-    return timing
-
+    return timing, worker_timing
 
 def main():
     parser = argparse.ArgumentParser(description="Amdahl's law benchmark for MapReduce cluster")
@@ -222,14 +248,19 @@ def main():
 
     results = []
     for n in worker_counts:
-        timing = bench_run(n, all_machines, args.port, args.splits, args.reducers, OUTPUT_DIR)
+        timing, worker_timing = bench_run(n, all_machines, args.port, args.splits, args.reducers, OUTPUT_DIR)
         record = {
-            "n_workers": n,
-            "n_splits":  args.splits,
+            "n_workers":  n,
+            "n_splits":   args.splits,
             "n_reducers": args.reducers,
-            "t_total":   timing["t_total"]   if timing else None,
-            "t_map":     timing["t_map"]     if timing else None,
-            "t_reduce":  timing["t_reduce"]  if timing else None,
+            "t_total":    timing["t_total"]   if timing else None,
+            "t_map":      timing["t_map"]     if timing else None,
+            "t_reduce":   timing["t_reduce"]  if timing else None,
+            "t_clean":    worker_timing["t_clean"],
+            "t_io_read":  worker_timing["t_io_read"],
+            "t_compute":  worker_timing["t_compute"],
+            "t_shuffle":  worker_timing["t_shuffle"],
+            "t_io_write": worker_timing["t_io_write"],
         }
         results.append(record)
         # Save incrementally so partial results survive a crash
