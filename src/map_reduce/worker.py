@@ -24,11 +24,21 @@ import argparse
 import collections
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
 import time
 import zlib
+
+import numpy as np
+
+# Compiled bytes regex: single pass over raw bytes, no per-line split+isalnum
+_WORD_RE = re.compile(rb'[A-Za-z0-9]+')
+
+# Vectorised CRC32: applies zlib.crc32 over a numpy object array in one call,
+# avoiding explicit Python for-loop overhead on the unique-words list.
+_crc32_vec = np.frompyfunc(zlib.crc32, 1, 1)
 
 
 STATUS_READY_FOR_TASK = "READY_FOR_TASK"
@@ -82,69 +92,76 @@ class MapReduceWorker:
         """Execute MAP task: partition input file and write local partition files."""
         split_id = task["split_id"]
         n_reducers = task["n_reducers"]
-        
+
         file_name = f"commoncrawl-{split_id:04d}.txt"
         file_path = os.path.join(self.input_dir, file_name)
-        
+
         log("INFO", f"MAP start split={split_id} reducers={n_reducers} input={file_path}")
-        
+
         if not os.path.exists(file_path):
             log("ERROR", f"Input split missing: {file_path}")
             return
 
         os.makedirs(self.local_map_dir, exist_ok=True)
 
-        # ── Phase: open partition files (I/O setup) ───────────────────────
-        t_io_open = time.time()
-        partition_files = {}
-        try:
-            for reducer_id in range(n_reducers):
-                partition_path = os.path.join(self.local_map_dir, f"partition_{reducer_id}.txt")
-                partition_files[reducer_id] = open(partition_path, "a", encoding="utf-8")
-        except Exception:
-            for f_out in partition_files.values():
-                f_out.close()
-            raise
-        t_io_open = time.time() - t_io_open
+        # ── Phase 1: read raw bytes (no text decoding) ────────────────────
+        _t_read = time.time()
+        with open(file_path, "rb") as f:
+            raw_data = f.read()
+        t_io_read = time.time() - _t_read
 
-        # ── Phase: read input + compute (word counting) ───────────────────
-        t_io_read = 0.0
-        t_compute = 0.0
-        try:
-            _t_read = time.time()
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                lines = f.readlines()
-            t_io_read = time.time() - _t_read
+        # ── Phase 2: tokenise + pre-aggregate (combine) ───────────────────
+        # Single regex pass over bytes → no per-line split, no isalnum loop.
+        # Then aggregate ALL occurrences into one dict first so that CRC32 is
+        # called only once per *unique* word, not once per occurrence.
+        _t_compute = time.time()
 
-            _t_compute = time.time()
-            for line_count, line in enumerate(lines):
-                for word in line.split():
-                    if word.isalnum():
-                        key = word.lower()
-                        reducer_id = zlib.crc32(key.encode()) % n_reducers
-                        partition_files[reducer_id].write(f"{key}\t1\n")
+        tokens = _WORD_RE.findall(raw_data)          # list[bytes]
 
-                if line_count % 50000 == 0:
-                    for f_out in partition_files.values():
-                        f_out.flush()
-            t_compute = time.time() - _t_compute
-        finally:
-            t_write = time.time()
-            for f_out in partition_files.values():
-                f_out.close()
-            t_write = time.time() - t_write
+        # Pass A – count every occurrence (pure dict; no CRC32 yet)
+        total_counts: dict[bytes, int] = {}
+        for tok in tokens:
+            key = tok.lower()
+            total_counts[key] = total_counts.get(key, 0) + 1
 
-        t_map_total = getattr(self, '_t_clean', 0.0) + t_io_open + t_io_read + t_compute + t_write
+        # Pass B – assign each unique word to a reducer via vectorised CRC32
+        if total_counts:
+            keys_arr  = np.array(list(total_counts.keys()), dtype=object)
+            crc_arr   = _crc32_vec(keys_arr).astype(np.int64)  # shape (U,)
+            rids_arr  = (crc_arr % n_reducers).astype(np.intp)
+
+            # Build per-reducer output lists (one entry per unique word)
+            buckets: list[list[str]] = [[] for _ in range(n_reducers)]
+            counts_list = list(total_counts.values())
+            for i, (key_b, count) in enumerate(zip(keys_arr, counts_list)):
+                buckets[rids_arr[i]].append(f"{key_b.decode()}\t{count}\n")
+        else:
+            buckets = [[] for _ in range(n_reducers)]
+
+        t_compute = time.time() - _t_compute
+
+        # ── Phase 3: write – one line per unique word, batched ────────────
+        t_write = time.time()
+        for rid, lines in enumerate(buckets):
+            if not lines:
+                continue
+            partition_path = os.path.join(self.local_map_dir, f"partition_{rid}.txt")
+            with open(partition_path, "a") as f_out:
+                f_out.writelines(lines)
+        t_write = time.time() - t_write
+
+        t_map_total = getattr(self, '_t_clean', 0.0) + t_io_read + t_compute + t_write
         log("INFO",
             f"MAP done split={split_id} "
-            f"t_clean={getattr(self,'_t_clean',0):.2f}s "
+            f"t_clean={getattr(self, '_t_clean', 0):.2f}s "
             f"t_io_read={t_io_read:.2f}s "
             f"t_compute={t_compute:.2f}s "
             f"t_io_write={t_write:.2f}s "
-            f"t_total={t_map_total:.2f}s")
+            f"t_total={t_map_total:.2f}s "
+            f"unique_words={len(total_counts)} tokens={len(tokens)}")
         print(
             f"WORKER_TIMING: {{\"phase\":\"MAP\",\"split_id\":{split_id},"
-            f"\"t_clean\":{getattr(self,'_t_clean',0):.3f},"
+            f"\"t_clean\":{getattr(self, '_t_clean', 0):.3f},"
             f"\"t_io_read\":{t_io_read:.3f},"
             f"\"t_compute\":{t_compute:.3f},"
             f"\"t_io_write\":{t_write:.3f}}}",
