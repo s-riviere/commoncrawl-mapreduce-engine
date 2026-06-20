@@ -66,7 +66,7 @@ def get_master_host():
     return socket.gethostname()
 
 
-def start_workers(machines, port, input_dir, output_dir, local_map_dir, master_host):
+def start_workers(machines, port, input_dir, output_dir, local_map_dir, master_host, max_ssh=8):
     """SSH-launch one worker process per machine; return list of Popen handles."""
     procs = []
     for host in machines:
@@ -75,6 +75,7 @@ def start_workers(machines, port, input_dir, output_dir, local_map_dir, master_h
             f"'cd ~/proj && nohup python3 src/map_reduce/worker.py "
             f"-h {master_host} -p {port} "
             f"-i {input_dir} -o {output_dir} -l {local_map_dir} "
+            f"--max-ssh {max_ssh} "
             f">/tmp/worker_{port}.log 2>&1 &'"
         )
         proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -179,7 +180,7 @@ def collect_worker_timings(machines, port):
     return aggregated
 
 
-def bench_run(n_workers, machines, port, n_splits, n_reducers, output_dir):
+def bench_run(n_workers, machines, port, n_splits, n_reducers, output_dir, max_ssh=8):
     """Single benchmark run with n_workers workers."""
     selected = machines[:n_workers]
     master_host = get_master_host()
@@ -201,7 +202,7 @@ def bench_run(n_workers, machines, port, n_splits, n_reducers, output_dir):
         master_proc.kill()
         return None
     log(f"  Master ready on port {port} — launching {n_workers} worker(s)")
-    start_workers(selected, port, INPUT_DIR, output_dir, LOCAL_MAP_DIR, master_host)
+    start_workers(selected, port, INPUT_DIR, output_dir, LOCAL_MAP_DIR, master_host, max_ssh=max_ssh)
     timing = collect_master(master_proc, port)
     worker_timing = collect_worker_timings(selected, port)
     kill_workers(selected, port)
@@ -231,6 +232,12 @@ def main():
         default=",".join(map(str, WORKER_COUNTS)),
         help="Comma-separated list of worker counts (default: 1,2,4,8,16,32)",
     )
+    parser.add_argument(
+        "--max-ssh",
+        type=int,
+        default=8,
+        help="Max parallel SSH connections per reducer during shuffle (default: 8)",
+    )
     args = parser.parse_args()
 
     worker_counts = [int(x) for x in args.counts.split(",")]
@@ -248,7 +255,8 @@ def main():
 
     results = []
     for n in worker_counts:
-        timing, worker_timing = bench_run(n, all_machines, args.port, args.splits, args.reducers, OUTPUT_DIR)
+        timing, worker_timing = bench_run(n, all_machines, args.port, args.splits, args.reducers, OUTPUT_DIR,
+                                          max_ssh=args.max_ssh)
         record = {
             "n_workers":  n,
             "n_splits":   args.splits,

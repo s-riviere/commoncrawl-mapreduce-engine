@@ -64,13 +64,14 @@ def send_json_line(sock, payload):
 class MapReduceWorker:
     """Encapsulates worker process state and lifecycle."""
 
-    def __init__(self, host, port, input_dir, output_dir, local_map_dir):
+    def __init__(self, host, port, input_dir, output_dir, local_map_dir, max_ssh=8):
         """Initialize worker with connection and directory parameters."""
         self.host = host
         self.port = port
         self.input_dir = os.path.expanduser(input_dir)
         self.output_dir = os.path.expanduser(output_dir)
         self.local_map_dir = os.path.expanduser(local_map_dir)
+        self.max_ssh = max_ssh
         self.socket = None
         self.buffer = ""
         self._t_clean = 0.0
@@ -192,7 +193,7 @@ class MapReduceWorker:
         # Cap parallelism so we never fire more than this many SSH processes at
         # once, even if n_workers is large.  ControlMaster makes each one cheap
         # (no TCP handshake), so 8 concurrent is plenty.
-        MAX_PARALLEL_SSH = 8
+        MAX_PARALLEL_SSH = self.max_ssh
         remote_partition = os.path.join(self.local_map_dir, f"partition_{reducer_id}.txt")
 
         def fetch_partition(raw_ip):
@@ -330,6 +331,7 @@ if __name__ == "__main__":
     parser.add_argument("-i", "--input-dir", required=True, metavar="DIR", help="Shared input directory for splits")
     parser.add_argument("-o", "--output-dir", required=True, metavar="DIR", help="Shared output directory for reduce results")
     parser.add_argument("-l", "--local-map-dir", required=True, metavar="DIR", help="Local directory for MAP intermediate partitions")
+    parser.add_argument("--max-ssh", type=int, default=8, metavar="N", help="Max parallel SSH connections during REDUCE shuffle (default: 8)")
     parser.add_argument("--help", action="help", help="Show this help message and exit")
     args = parser.parse_args()
 
@@ -338,6 +340,7 @@ if __name__ == "__main__":
         port=args.port,
         input_dir=args.input_dir,
         output_dir=args.output_dir,
-        local_map_dir=args.local_map_dir
+        local_map_dir=args.local_map_dir,
+        max_ssh=args.max_ssh,
     )
     worker.run()
