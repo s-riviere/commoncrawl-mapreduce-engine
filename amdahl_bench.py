@@ -66,8 +66,9 @@ def get_master_host():
     return socket.gethostname()
 
 
-def start_workers(machines, port, input_dir, output_dir, local_map_dir, master_host, max_ssh=8):
+def start_workers(machines, port, input_dir, output_dir, local_map_dir, master_host, max_ssh=None):
     """SSH-launch one worker process per machine; return list of Popen handles."""
+    max_ssh_arg = f"--max-ssh {max_ssh}" if max_ssh is not None else ""
     procs = []
     for host in machines:
         cmd = (
@@ -75,7 +76,7 @@ def start_workers(machines, port, input_dir, output_dir, local_map_dir, master_h
             f"'cd ~/proj && nohup python3 src/map_reduce/worker.py "
             f"-h {master_host} -p {port} "
             f"-i {input_dir} -o {output_dir} -l {local_map_dir} "
-            f"--max-ssh {max_ssh} "
+            f"{max_ssh_arg} "
             f">/tmp/worker_{port}.log 2>&1 &'"
         )
         proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -235,8 +236,8 @@ def main():
     parser.add_argument(
         "--max-ssh",
         type=int,
-        default=8,
-        help="Max parallel SSH connections per reducer during shuffle (default: 8)",
+        default=None,
+        help="Max parallel SSH connections per reducer during shuffle (default: auto = min(n_workers, 8))",
     )
     args = parser.parse_args()
 

@@ -64,13 +64,16 @@ def send_json_line(sock, payload):
 class MapReduceWorker:
     """Encapsulates worker process state and lifecycle."""
 
-    def __init__(self, host, port, input_dir, output_dir, local_map_dir, max_ssh=8):
+    def __init__(self, host, port, input_dir, output_dir, local_map_dir, max_ssh=None):
         """Initialize worker with connection and directory parameters."""
         self.host = host
         self.port = port
         self.input_dir = os.path.expanduser(input_dir)
         self.output_dir = os.path.expanduser(output_dir)
         self.local_map_dir = os.path.expanduser(local_map_dir)
+        # max_ssh=None means auto: resolved at REDUCE time to min(n_workers, 8).
+        # Empirically determined: shuffle t_wall floors at max_ssh=6-8 on this
+        # cluster; beyond 8 gives no further gain but adds thread overhead.
         self.max_ssh = max_ssh
         self.socket = None
         self.buffer = ""
@@ -190,10 +193,11 @@ class MapReduceWorker:
             f"-o ControlPath={ctrl_path} "
             "-o ControlPersist=120s"
         )
-        # Cap parallelism so we never fire more than this many SSH processes at
-        # once, even if n_workers is large.  ControlMaster makes each one cheap
-        # (no TCP handshake), so 8 concurrent is plenty.
-        MAX_PARALLEL_SSH = self.max_ssh
+        # Empirically determined optimum (ssh_parallelism_sweep.py):
+        # shuffle wall-time floors at max_ssh=6-8 for N≤32 on this cluster.
+        # ControlMaster deduplicates real TCP connections, so going higher is
+        # free on the network but adds thread overhead with no shuffle benefit.
+        MAX_PARALLEL_SSH = min(len(map_workers), self.max_ssh if self.max_ssh is not None else 8)
         remote_partition = os.path.join(self.local_map_dir, f"partition_{reducer_id}.txt")
 
         def fetch_partition(raw_ip):
@@ -331,7 +335,9 @@ if __name__ == "__main__":
     parser.add_argument("-i", "--input-dir", required=True, metavar="DIR", help="Shared input directory for splits")
     parser.add_argument("-o", "--output-dir", required=True, metavar="DIR", help="Shared output directory for reduce results")
     parser.add_argument("-l", "--local-map-dir", required=True, metavar="DIR", help="Local directory for MAP intermediate partitions")
-    parser.add_argument("--max-ssh", type=int, default=8, metavar="N", help="Max parallel SSH connections during REDUCE shuffle (default: 8)")
+    parser.add_argument("--max-ssh", type=int, default=None, metavar="N",
+                        help="Max parallel SSH connections during REDUCE shuffle "
+                             "(default: auto = min(n_workers, 8), empirically optimal)")
     parser.add_argument("--help", action="help", help="Show this help message and exit")
     args = parser.parse_args()
 
