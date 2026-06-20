@@ -192,6 +192,7 @@ class MapReduceWorker:
             f"unique_words={len(total_counts)} tokens={len(tokens)}")
         print(
             f"WORKER_TIMING: {{\"phase\":\"MAP\",\"split_id\":{split_id},"
+            f"\"t_download\":{t_download:.3f},"
             f"\"t_clean\":{getattr(self, '_t_clean', 0):.3f},"
             f"\"t_io_read\":{t_io_read:.3f},"
             f"\"t_compute\":{t_compute:.3f},"

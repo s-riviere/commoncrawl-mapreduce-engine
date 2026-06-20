@@ -51,7 +51,6 @@ def load_results(path):
 def compute_speedup(results):
     t1 = next((r["t_total"] for r in results if r["n_workers"] == 1), None)
     if t1 is None:
-        # Fallback: use smallest N as baseline
         t1 = results[0]["t_total"]
         print(f"WARN: no N=1 run found; using N={results[0]['n_workers']} as baseline.")
     ns      = np.array([r["n_workers"] for r in results], dtype=float)
@@ -59,7 +58,17 @@ def compute_speedup(results):
     t_maps  = np.array([r["t_map"]     for r in results], dtype=float)
     t_reds  = np.array([r["t_reduce"]  for r in results], dtype=float)
     speedup = t1 / totals
-    return ns, speedup, t_maps, t_reds, t1
+    # Adjusted speedup: exclude download time from wall clock for fair comparison
+    has_adj = all(r.get("t_map_adj") is not None for r in results)
+    if has_adj:
+        t_maps_adj = np.array([r["t_map_adj"] for r in results], dtype=float)
+        t_dl_max   = np.array([r.get("t_download_max", 0.0) for r in results], dtype=float)
+        totals_adj = totals - t_dl_max
+        t1_adj     = totals_adj[np.argmin(ns == ns.min())]
+        speedup_adj = t1_adj / totals_adj
+    else:
+        speedup_adj = t_maps_adj = None
+    return ns, speedup, speedup_adj, t_maps, t_reds, t1
 
 
 def fit_amdahl(ns, speedup):
@@ -74,17 +83,26 @@ def fit_amdahl(ns, speedup):
         return None, None
 
 
-def plot(ns, speedup, t_maps, t_reds, f_serial, output_path):
+def plot(ns, speedup, speedup_adj, t_maps, t_reds, f_serial, output_path):
     fig = plt.figure(figsize=(13, 5))
     gs  = gridspec.GridSpec(1, 2, figure=fig, wspace=0.38)
 
-    # ── Left: Speedup curve ──────────────────────────────────────────────────
+    # ── Left: Speedup curve ────────────────────────────────────────────
     ax1 = fig.add_subplot(gs[0])
 
-    ax1.plot(ns, speedup, "o-", color="#2196F3", linewidth=2, markersize=7, label="Empirical speedup")
+    ax1.plot(ns, speedup, "o-", color="#2196F3", linewidth=2, markersize=7,
+             label="Empirical speedup", zorder=3)
 
+    if speedup_adj is not None:
+        ax1.plot(ns, speedup_adj, "s--", color="#4CAF50", linewidth=2, markersize=7,
+                 label="Speedup (excl. download)", zorder=3)
+
+    # Cap ideal-linear line at the empirical max + 20% so it doesn't dwarf the data
+    s_emp_max = speedup.max()
+    y_top = s_emp_max * 1.35
     n_dense = np.linspace(ns.min(), ns.max(), 300)
-    ax1.plot(n_dense, n_dense, "--", color="#9E9E9E", linewidth=1.2, label="Ideal linear")
+    ideal = np.minimum(n_dense, y_top)
+    ax1.plot(n_dense, ideal, "--", color="#9E9E9E", linewidth=1.2, label="Ideal linear")
 
     if f_serial is not None:
         ax1.plot(
@@ -99,8 +117,8 @@ def plot(ns, speedup, t_maps, t_reds, f_serial, output_path):
         s_max = 1.0 / f_serial
         ax1.axhline(s_max, color="#FF5722", linestyle=":", linewidth=1, alpha=0.6)
         ax1.text(
-            ns.max() * 0.55, s_max * 1.02,
-            f"S_max ≈ {s_max:.1f}×",
+            ns[len(ns) // 2], s_max * 1.04,
+            f"max ≈ {s_max:.1f}×",
             color="#FF5722", fontsize=9,
         )
 
@@ -109,18 +127,21 @@ def plot(ns, speedup, t_maps, t_reds, f_serial, output_path):
         ax1.annotate(
             f"{s:.2f}×",
             xy=(n, s),
-            xytext=(4, 6),
+            xytext=(4, 8),
             textcoords="offset points",
-            fontsize=8,
+            fontsize=8.5,
             color="#1565C0",
         )
 
-    ax1.set_xlabel("Number of workers (N)", fontsize=11)
+    ax1.set_xscale("log", base=2)
+    ax1.set_xticks(ns.astype(int))
+    ax1.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+    ax1.set_ylim(0, y_top)
+    ax1.set_xlabel("Number of workers (N)  [log₂ scale]", fontsize=11)
     ax1.set_ylabel("Speedup  S(N) = T(1) / T(N)", fontsize=11)
     ax1.set_title("Amdahl's Law — MapReduce Speedup", fontsize=12, fontweight="bold")
     ax1.legend(fontsize=9)
-    ax1.grid(True, alpha=0.3)
-    ax1.set_xticks(ns.astype(int))
+    ax1.grid(True, alpha=0.3, which="both")
 
     # ── Right: Phase breakdown (stacked bar) ────────────────────────────────
     ax2 = fig.add_subplot(gs[1])
@@ -155,19 +176,20 @@ def main():
     args = parser.parse_args()
 
     results  = load_results(args.input)
-    ns, speedup, t_maps, t_reds, t1 = compute_speedup(results)
+    ns, speedup, speedup_adj, t_maps, t_reds, t1 = compute_speedup(results)
 
     print(f"Baseline T(1) = {t1:.1f}s")
-    print(f"{'N':>5}  {'T(N)':>8}  {'S(N)':>7}  {'T_map':>8}  {'T_red':>8}")
-    for r, s in zip(results, speedup):
-        print(f"{r['n_workers']:>5}  {r['t_total']:>8.1f}  {s:>7.3f}  {r['t_map']:>8.1f}  {r['t_reduce']:>8.1f}")
+    print(f"{'N':>5}  {'T(N)':>8}  {'S(N)':>7}  {'S(N)adj':>9}  {'T_map':>8}  {'T_red':>8}")
+    for r, s, sa in zip(results, speedup, speedup_adj if speedup_adj is not None else speedup):
+        sadj_str = f"{sa:>9.3f}" if speedup_adj is not None else "        -"
+        print(f"{r['n_workers']:>5}  {r['t_total']:>8.1f}  {s:>7.3f}  {sadj_str}  {r['t_map']:>8.1f}  {r['t_reduce']:>8.1f}")
 
     f_serial, _ = fit_amdahl(ns, speedup)
     if f_serial is not None:
         print(f"\nAmdahl serial fraction f = {f_serial:.4f}")
-        print(f"Theoretical max speedup   = {1/f_serial:.1f}×")
+        print(f"Theoretical max speedup   = {1/f_serial:.1f}\u00d7")
 
-    plot(ns, speedup, t_maps, t_reds, f_serial, args.output)
+    plot(ns, speedup, speedup_adj, t_maps, t_reds, f_serial, args.output)
 
 
 if __name__ == "__main__":

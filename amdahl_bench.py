@@ -113,7 +113,7 @@ def wait_for_master(host, port, timeout=15):
     return False
 
 
-def run_master(port, n_splits, n_reducers, timeout=3600):
+def run_master(port, n_splits, n_reducers, crawl_id=None, timeout=3600):
     """
     Start master as a subprocess, stream its output live, wait for it to finish.
     Returns the parsed TIMING dict, or None on failure.
@@ -125,6 +125,8 @@ def run_master(port, n_splits, n_reducers, timeout=3600):
         "-s", str(n_splits),
         "-r", str(n_reducers),
     ]
+    if crawl_id:
+        cmd += ["--crawl", crawl_id]
     log(f"  Starting master: {' '.join(cmd)}")
     proc = subprocess.Popen(
         cmd,
@@ -164,8 +166,12 @@ def collect_master(proc, port, timeout=3600):
 
 def collect_worker_timings(machines, port):
     """SSH-read worker log files and aggregate WORKER_TIMING entries."""
-    aggregated = {"t_clean": 0.0, "t_io_read": 0.0, "t_compute": 0.0,
-                  "t_io_write": 0.0, "t_shuffle": 0.0}
+    aggregated = {"t_download": 0.0, "t_clean": 0.0, "t_io_read": 0.0,
+                  "t_compute": 0.0, "t_shuffle": 0.0, "t_io_write": 0.0}
+    # t_download_max: the longest single download seen across all workers/splits.
+    # Since downloads happen in parallel, this approximates the download overhead
+    # that added to wall-clock time (used to compute t_map_adj).
+    t_download_max = 0.0
     for host in machines:
         cmd = f"ssh {SSH_OPTS} {host} 'cat /tmp/worker_{port}.log 2>/dev/null'"
         try:
@@ -176,12 +182,14 @@ def collect_worker_timings(machines, port):
                     d = json.loads(m.group(1))
                     for key in aggregated:
                         aggregated[key] += d.get(key, 0.0)
+                    t_download_max = max(t_download_max, d.get("t_download", 0.0))
         except Exception as e:
             log(f"  WARN: could not read worker log from {host}: {e}")
+    aggregated["t_download_max"] = t_download_max
     return aggregated
 
 
-def bench_run(n_workers, machines, port, n_splits, n_reducers, output_dir, max_ssh=8):
+def bench_run(n_workers, machines, port, n_splits, n_reducers, output_dir, max_ssh=8, crawl_id=None):
     """Single benchmark run with n_workers workers."""
     selected = machines[:n_workers]
     master_host = get_master_host()
@@ -197,8 +205,8 @@ def bench_run(n_workers, machines, port, n_splits, n_reducers, output_dir, max_s
             pass
 
     # Start master first, wait until its port is open, then launch workers
-    master_proc = run_master(port, n_splits, n_reducers)
-    if not wait_for_master("localhost", port):
+    master_proc = run_master(port, n_splits, n_reducers, crawl_id=crawl_id)
+    if not wait_for_master("localhost", port, timeout=90):
         log("  ERROR: master port never opened — killing")
         master_proc.kill()
         return None
@@ -209,8 +217,13 @@ def bench_run(n_workers, machines, port, n_splits, n_reducers, output_dir, max_s
     kill_workers(selected, port)
 
     if timing:
+        t_dl_max = worker_timing.get("t_download_max", 0.0)
+        t_map_adj = timing["t_map"] - t_dl_max
         log(f"  N={n_workers} → total={timing['t_total']:.1f}s  map={timing['t_map']:.1f}s  reduce={timing['t_reduce']:.1f}s")
+        if t_dl_max:
+            log(f"           download overhead (max) = {t_dl_max:.1f}s  → adj map={t_map_adj:.1f}s")
         log(f"           worker breakdown → "
+            f"dl={worker_timing['t_download']:.1f}s  "
             f"clean={worker_timing['t_clean']:.1f}s  "
             f"io_read={worker_timing['t_io_read']:.1f}s  "
             f"compute={worker_timing['t_compute']:.1f}s  "
@@ -239,6 +252,13 @@ def main():
         default=None,
         help="Max parallel SSH connections per reducer during shuffle (default: auto = min(n_workers, 8))",
     )
+    parser.add_argument(
+        "--crawl",
+        default=None,
+        metavar="CRAWL_ID",
+        help="CommonCrawl crawl ID for on-demand download (e.g. CC-MAIN-2024-10). "
+             "Workers download splits to /tmp instead of reading from NFS.",
+    )
     args = parser.parse_args()
 
     worker_counts = [int(x) for x in args.counts.split(",")]
@@ -257,19 +277,24 @@ def main():
     results = []
     for n in worker_counts:
         timing, worker_timing = bench_run(n, all_machines, args.port, args.splits, args.reducers, OUTPUT_DIR,
-                                          max_ssh=args.max_ssh)
+                                          max_ssh=args.max_ssh, crawl_id=args.crawl)
+        t_dl_max = worker_timing.get("t_download_max", 0.0)
         record = {
-            "n_workers":  n,
-            "n_splits":   args.splits,
-            "n_reducers": args.reducers,
-            "t_total":    timing["t_total"]   if timing else None,
-            "t_map":      timing["t_map"]     if timing else None,
-            "t_reduce":   timing["t_reduce"]  if timing else None,
-            "t_clean":    worker_timing["t_clean"],
-            "t_io_read":  worker_timing["t_io_read"],
-            "t_compute":  worker_timing["t_compute"],
-            "t_shuffle":  worker_timing["t_shuffle"],
-            "t_io_write": worker_timing["t_io_write"],
+            "n_workers":    n,
+            "n_splits":     args.splits,
+            "n_reducers":   args.reducers,
+            "crawl_id":     args.crawl,
+            "t_total":      timing["t_total"]   if timing else None,
+            "t_map":        timing["t_map"]     if timing else None,
+            "t_map_adj":    round(timing["t_map"] - t_dl_max, 3) if timing else None,
+            "t_reduce":     timing["t_reduce"]  if timing else None,
+            "t_download":   worker_timing["t_download"],
+            "t_download_max": t_dl_max,
+            "t_clean":      worker_timing["t_clean"],
+            "t_io_read":    worker_timing["t_io_read"],
+            "t_compute":    worker_timing["t_compute"],
+            "t_shuffle":    worker_timing["t_shuffle"],
+            "t_io_write":   worker_timing["t_io_write"],
         }
         results.append(record)
         # Save incrementally so partial results survive a crash
