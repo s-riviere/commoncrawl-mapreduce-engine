@@ -64,7 +64,7 @@ def compute_speedup(results):
         t_maps_adj = np.array([r["t_map_adj"] for r in results], dtype=float)
         t_dl_max   = np.array([r.get("t_download_max", 0.0) for r in results], dtype=float)
         totals_adj = totals - t_dl_max
-        t1_adj     = totals_adj[np.argmin(ns == ns.min())]
+        t1_adj     = totals_adj[np.argmax(ns == ns.min())]  # baseline = smallest N
         speedup_adj = t1_adj / totals_adj
     else:
         speedup_adj = t_maps_adj = None
@@ -105,6 +105,7 @@ def plot(ns, speedup, speedup_adj, t_maps, t_reds, f_serial, output_path):
     ax1.plot(n_dense, ideal, "--", color="#9E9E9E", linewidth=1.2, label="Ideal linear")
 
     if f_serial is not None:
+        s_max = 1.0 / f_serial if f_serial > 1e-4 else None
         ax1.plot(
             n_dense,
             amdahl(n_dense, f_serial),
@@ -113,14 +114,20 @@ def plot(ns, speedup, speedup_adj, t_maps, t_reds, f_serial, output_path):
             linewidth=2,
             label=f"Amdahl fit  (f = {f_serial:.3f})",
         )
-        # Annotate theoretical max speedup
-        s_max = 1.0 / f_serial
-        ax1.axhline(s_max, color="#FF5722", linestyle=":", linewidth=1, alpha=0.6)
-        ax1.text(
-            ns[len(ns) // 2], s_max * 1.04,
-            f"max ≈ {s_max:.1f}×",
-            color="#FF5722", fontsize=9,
-        )
+        # Only annotate if theoretical max is within a sensible range
+        if s_max is not None and s_max < y_top * 10:
+            ax1.axhline(s_max, color="#FF5722", linestyle=":", linewidth=1, alpha=0.6)
+            ax1.text(
+                ns[len(ns) // 2], min(s_max * 1.04, y_top * 0.95),
+                f"max ≈ {s_max:.1f}×",
+                color="#FF5722", fontsize=9,
+            )
+        elif s_max is None:
+            ax1.text(
+                ns[0], y_top * 0.92,
+                "f ≈ 0 (near-perfect scaling)",
+                color="#FF5722", fontsize=9,
+            )
 
     # Annotate each empirical point with its speedup value
     for n, s in zip(ns, speedup):
