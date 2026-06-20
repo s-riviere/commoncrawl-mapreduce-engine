@@ -190,8 +190,10 @@ class MasterServer:
         log("INFO", f"Worker disconnected: {worker_host}")
 
     def run(self):
-        self.load_tasks()
-
+        # Bind the socket BEFORE loading tasks so that workers can connect and
+        # queue up while the master is still fetching wet.paths.gz.
+        # Workers that connect early will receive TASK_WAIT until load_tasks()
+        # finishes and populates self.map_tasks.
         server = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
         server.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -199,6 +201,9 @@ class MasterServer:
         server.listen(64)
         server.settimeout(1)
         log("INFO", f"Listening on port {self.port} (dual-stack), reducers={self.n_reducers}")
+
+        self.load_tasks()  # may fetch wet.paths.gz; workers wait via TASK_WAIT
+        log("INFO", "Tasks ready — accepting work")
 
         self.t_start = time.time()
         try:
