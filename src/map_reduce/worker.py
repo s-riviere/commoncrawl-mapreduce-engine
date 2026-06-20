@@ -175,7 +175,24 @@ class MapReduceWorker:
 
         log("INFO", f"REDUCE start reducer={reducer_id} map_workers={len(map_workers)}")
 
-        ssh_opts = "-o StrictHostKeyChecking=no -o BatchMode=yes -o LogLevel=ERROR"
+        # ControlMaster=auto: first SSH to each host creates a multiplexed master
+        # socket; all subsequent connections (including parallel ones from other
+        # reducers on the same machine) reuse it transparently.  The server only
+        # sees ONE real TCP connection per unique host regardless of parallelism,
+        # which avoids triggering fail2ban / IDS on the cluster.
+        ctrl_path = f"/tmp/ssh-ctrl-%h-{self.port}"
+        ssh_opts = (
+            "-o StrictHostKeyChecking=no "
+            "-o BatchMode=yes "
+            "-o LogLevel=ERROR "
+            "-o ControlMaster=auto "
+            f"-o ControlPath={ctrl_path} "
+            "-o ControlPersist=120s"
+        )
+        # Cap parallelism so we never fire more than this many SSH processes at
+        # once, even if n_workers is large.  ControlMaster makes each one cheap
+        # (no TCP handshake), so 8 concurrent is plenty.
+        MAX_PARALLEL_SSH = 8
         remote_partition = os.path.join(self.local_map_dir, f"partition_{reducer_id}.txt")
 
         def fetch_partition(raw_ip):
@@ -201,7 +218,7 @@ class MapReduceWorker:
         # All SSH fetches run concurrently; wall time = slowest single fetch.
         t_shuffle_start = time.time()
         all_raw_lines = []
-        with ThreadPoolExecutor(max_workers=len(map_workers)) as ex:
+        with ThreadPoolExecutor(max_workers=min(len(map_workers), MAX_PARALLEL_SSH)) as ex:
             futures = {ex.submit(fetch_partition, ip): ip for ip in map_workers}
             for fut in as_completed(futures):
                 _, lines = fut.result()
