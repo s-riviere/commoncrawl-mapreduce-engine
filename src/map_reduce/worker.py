@@ -30,6 +30,7 @@ import socket
 import subprocess
 import time
 import zlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 
@@ -173,47 +174,59 @@ class MapReduceWorker:
         map_workers = task["map_workers"]
 
         log("INFO", f"REDUCE start reducer={reducer_id} map_workers={len(map_workers)}")
-        
-        final_counts = collections.defaultdict(int)
+
         ssh_opts = "-o StrictHostKeyChecking=no -o BatchMode=yes -o LogLevel=ERROR"
+        remote_partition = os.path.join(self.local_map_dir, f"partition_{reducer_id}.txt")
 
-        # ── Phase: shuffle (network transfer via SSH) ─────────────────────
-        t_shuffle = 0.0
-        t_compute = 0.0
-        for worker_ip in map_workers:
-            if worker_ip.startswith("::ffff:"):
-                worker_ip = worker_ip.replace("::ffff:", "", 1)
-            
-            remote_partition = os.path.join(self.local_map_dir, f"partition_{reducer_id}.txt")
+        def fetch_partition(raw_ip):
+            """Fetch one partition file via SSH; returns (elapsed, lines)."""
+            worker_ip = raw_ip.replace("::ffff:", "", 1) if raw_ip.startswith("::ffff:") else raw_ip
             cmd = f"ssh {ssh_opts} {worker_ip} 'cat {remote_partition}'"
-            
+            t0 = time.time()
             try:
-                _t0 = time.time()
-                proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-                raw_lines = proc.stdout.readlines()
-                t_shuffle += time.time() - _t0
-
-                _tc = time.time()
-                for line in raw_lines:
-                    if not line.strip():
-                        continue
-                    k, v = line.split("\t", 1)
-                    final_counts[k] += int(v)
-                t_compute += time.time() - _tc
-
+                proc = subprocess.Popen(
+                    cmd, shell=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+                )
+                lines = proc.stdout.readlines()
                 proc.wait(timeout=30)
                 if proc.returncode != 0:
                     log("WARN", f"REDUCE reducer={reducer_id} ssh failed host={worker_ip} code={proc.returncode}")
             except Exception as e:
                 log("ERROR", f"REDUCE reducer={reducer_id} shuffle error host={worker_ip}: {e}")
+                lines = []
+            return time.time() - t0, lines
+
+        # ── Phase: parallel shuffle ────────────────────────────────────────
+        # All SSH fetches run concurrently; wall time = slowest single fetch.
+        t_shuffle_start = time.time()
+        all_raw_lines = []
+        with ThreadPoolExecutor(max_workers=len(map_workers)) as ex:
+            futures = {ex.submit(fetch_partition, ip): ip for ip in map_workers}
+            for fut in as_completed(futures):
+                _, lines = fut.result()
+                all_raw_lines.extend(lines)
+        t_shuffle = time.time() - t_shuffle_start
+
+        # ── Phase: aggregate ──────────────────────────────────────────────
+        t_compute_start = time.time()
+        final_counts: dict[str, int] = {}
+        for line in all_raw_lines:
+            if not line.strip():
+                continue
+            k, v = line.split("\t", 1)
+            final_counts[k] = final_counts.get(k, 0) + int(v)
+        t_compute = time.time() - t_compute_start
 
         # ── Phase: write output (I/O) ─────────────────────────────────────
         os.makedirs(self.output_dir, exist_ok=True)
         output_file_path = os.path.join(self.output_dir, f"part-{reducer_id}.txt")
         t_io_write = time.time()
-        with open(output_file_path, "w", encoding="utf-8") as f:
-            for key, total in sorted(final_counts.items(), key=lambda x: x[1], reverse=True):
-                f.write(f"{key}\t{total}\n")
+        with open(output_file_path, "w") as f:
+            f.writelines(
+                f"{key}\t{total}\n"
+                for key, total in sorted(final_counts.items(), key=lambda x: x[1], reverse=True)
+            )
         t_io_write = time.time() - t_io_write
 
         log("INFO",
