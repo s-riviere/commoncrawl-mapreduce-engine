@@ -21,10 +21,15 @@
 # ==============================================================================
 
 import argparse
+import gzip
 import json
 import socket
 import threading
 import time
+import urllib.request
+
+BASE_CC_URL    = "https://data.commoncrawl.org/"
+DEFAULT_CRAWL  = "CC-MAIN-2024-10"
 
 
 STATUS_READY_FOR_TASK = "READY_FOR_TASK"
@@ -50,10 +55,12 @@ def normalize_worker_host(host):
 
 
 class MasterServer:
-    def __init__(self, port, n_splits, n_reducers):
+    def __init__(self, port, n_splits, n_reducers, crawl_id=None):
         self.port = port
         self.n_splits = n_splits
         self.n_reducers = n_reducers
+        self.crawl_id = crawl_id  # if set, embed download URLs in MAP tasks
+        self._wet_paths: list[str] = []  # populated by _fetch_wet_paths()
 
         self.lock = threading.Lock()
         self.map_tasks = []
@@ -76,11 +83,27 @@ class MasterServer:
     def _send_json(self, conn, payload):
         conn.sendall((json.dumps(payload) + "\n").encode("utf-8"))
 
+    def _fetch_wet_paths(self):
+        """Fetch the WET file path list for the configured crawl."""
+        url = f"{BASE_CC_URL}crawl-data/{self.crawl_id}/wet.paths.gz"
+        log("INFO", f"Fetching WET paths from {url} ...")
+        req = urllib.request.Request(url, headers={"User-Agent": "SLR207-MapReduce/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            with gzip.open(resp, "rt") as f:
+                self._wet_paths = [line.strip() for line in f if line.strip()]
+        log("INFO", f"Loaded {len(self._wet_paths)} WET paths for crawl {self.crawl_id}")
+
     def load_tasks(self):
-        self.map_tasks = [
-            {"type": TASK_MAP, "split_id": i, "n_reducers": self.n_reducers}
-            for i in range(self.n_splits)
-        ]
+        if self.crawl_id:
+            self._fetch_wet_paths()
+
+        def make_map_task(i):
+            task = {"type": TASK_MAP, "split_id": i, "n_reducers": self.n_reducers}
+            if self._wet_paths and i < len(self._wet_paths):
+                task["url"] = BASE_CC_URL + self._wet_paths[i]
+            return task
+
+        self.map_tasks = [make_map_task(i) for i in range(self.n_splits)]
         self.total_map_tasks = len(self.map_tasks)
 
         self.reduce_tasks = [{"type": TASK_REDUCE, "reducer_id": i} for i in range(self.n_reducers)]
@@ -211,14 +234,18 @@ class MasterServer:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Master Server pour MapReduce")
-    parser.add_argument("-p", "--port", type=int, default=54321, help="Port d'ecoute (defaut: 54321)")
-    parser.add_argument("-s", "--splits", type=int, default=10, help="Nombre de splits MAP (defaut: 10)")
-    parser.add_argument("-r", "--reducers", type=int, default=10, help="Nombre de reducers (defaut: 10)")
+    parser.add_argument("-p", "--port",     type=int, default=54321, help="Port d'ecoute (defaut: 54321)")
+    parser.add_argument("-s", "--splits",   type=int, default=10,    help="Nombre de splits MAP (defaut: 10)")
+    parser.add_argument("-r", "--reducers", type=int, default=10,    help="Nombre de reducers (defaut: 10)")
+    parser.add_argument("-c", "--crawl",    default=None,
+                        help=f"CommonCrawl crawl ID to embed download URLs in tasks (e.g. {DEFAULT_CRAWL}). "
+                             "Workers download splits on-demand to /tmp if NFS file is missing.")
     args = parser.parse_args()
 
     master = MasterServer(
         port=args.port,
         n_reducers=args.reducers,
-        n_splits=args.splits
+        n_splits=args.splits,
+        crawl_id=args.crawl,
     )
     master.run()

@@ -22,6 +22,7 @@
 
 import argparse
 import collections
+import gzip
 import json
 import os
 import re
@@ -29,6 +30,7 @@ import shutil
 import socket
 import subprocess
 import time
+import urllib.request
 import zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -95,18 +97,41 @@ class MapReduceWorker:
 
     def _execute_map(self, task):
         """Execute MAP task: partition input file and write local partition files."""
-        split_id = task["split_id"]
+        split_id   = task["split_id"]
         n_reducers = task["n_reducers"]
+        url        = task.get("url")  # present when master was started with --crawl
 
         file_name = f"commoncrawl-{split_id:04d}.txt"
         file_path = os.path.join(self.input_dir, file_name)
 
-        log("INFO", f"MAP start split={split_id} reducers={n_reducers} input={file_path}")
-
+        # ── On-demand download to /tmp if NFS file is absent ──────────────
+        # Workers download their assigned split independently in parallel;
+        # /tmp is local disk (no NFS quota).  The file is deleted after MAP
+        # to keep /tmp tidy.
+        tmp_path      = None   # set if we downloaded to /tmp
+        t_download    = 0.0
         if not os.path.exists(file_path):
-            log("ERROR", f"Input split missing: {file_path}")
-            return
+            if not url:
+                log("ERROR", f"Input split missing and no URL in task: {file_path}")
+                return
+            tmp_path  = f"/tmp/commoncrawl-{split_id:04d}.txt"
+            log("INFO", f"MAP split={split_id}: NFS file absent, downloading to {tmp_path}")
+            _t_dl = time.time()
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "SLR207-MapReduce/1.0"})
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    with gzip.open(resp, "rt", encoding="utf-8", errors="ignore") as gz_in:
+                        with open(tmp_path, "w", encoding="utf-8") as f_out:
+                            for line in gz_in:
+                                f_out.write(line)
+                t_download = time.time() - _t_dl
+                file_path  = tmp_path
+                log("INFO", f"MAP split={split_id}: download done in {t_download:.1f}s")
+            except Exception as e:
+                log("ERROR", f"MAP split={split_id}: download failed: {e}")
+                return
 
+        log("INFO", f"MAP start split={split_id} reducers={n_reducers} input={file_path}")
         os.makedirs(self.local_map_dir, exist_ok=True)
 
         # ── Phase 1: read raw bytes (no text decoding) ────────────────────
@@ -158,6 +183,7 @@ class MapReduceWorker:
         t_map_total = getattr(self, '_t_clean', 0.0) + t_io_read + t_compute + t_write
         log("INFO",
             f"MAP done split={split_id} "
+            f"t_download={t_download:.2f}s "
             f"t_clean={getattr(self, '_t_clean', 0):.2f}s "
             f"t_io_read={t_io_read:.2f}s "
             f"t_compute={t_compute:.2f}s "
@@ -171,6 +197,10 @@ class MapReduceWorker:
             f"\"t_compute\":{t_compute:.3f},"
             f"\"t_io_write\":{t_write:.3f}}}",
             flush=True)
+
+        # Clean up /tmp download to avoid filling local disk
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
     def _execute_reduce(self, task):
         """Execute REDUCE task: shuffle partitions and aggregate word counts."""
