@@ -113,7 +113,7 @@ def wait_for_master(host, port, timeout=15):
     return False
 
 
-def run_master(port, n_splits, n_reducers, timeout=600):
+def run_master(port, n_splits, n_reducers, timeout=3600):
     """
     Start master as a subprocess, stream its output live, wait for it to finish.
     Returns the parsed TIMING dict, or None on failure.
@@ -136,7 +136,7 @@ def run_master(port, n_splits, n_reducers, timeout=600):
     return proc
 
 
-def collect_master(proc, port, timeout=600):
+def collect_master(proc, port, timeout=3600):
     """Stream master output, parse TIMING line, return timing dict or None."""
     timing = None
     deadline = time.time() + timeout
