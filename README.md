@@ -106,6 +106,13 @@ Le même moteur (`master.py` / `worker.py`) tourne en solo et en multi-nœuds : 
 lancé avec `--advertise-host 127.0.0.1 --local-shuffle` lit les partitions sur disque
 local au lieu de les tirer par SSH, tout le reste du protocole est identique.
 
+Pour une démo manuelle pas-à-pas sur une seule machine (master + N workers lancés à la
+main), utilisez [scripts/local_cluster.sh](scripts/local_cluster.sh) :
+
+```bash
+bash scripts/local_cluster.sh -i <dossier_splits> -n 4 --validate
+```
+
 ### Dépendances optionnelles (figure + accélération)
 
 `numpy` (CRC32 vectorisé) et `matplotlib` (rendu de la figure) sont **optionnels** : le
@@ -127,6 +134,8 @@ scripts/
   deploy_commoncrawl.sh     # déploiement complet CommonCrawl + MapReduce
   kill_commoncrawl.sh       # arrêt + nettoyage distant MapReduce
   fault_tolerance_demo.sh   # injection de panne (kill worker) pour démo FT
+  local_cluster.sh          # cluster MapReduce manuel sur une seule machine
+  find_scratch.sh           # exploration df/mount : recommande une partition scratch
   get_machines.sh           # sélection des meilleures machines via API
   bench.sh                  # instrumentation timing shell
   kafka/
@@ -153,6 +162,8 @@ runtime/
 
 report/
   report.md                 # rapport (7 points demandés)
+  amdahl_results.json       # données du graphe Amdahl (livrées avec le rapport)
+  amdahl_speedup.png        # graphe Amdahl (livré avec le rapport)
 slides/
   presentation.md           # support de démo (10 min)
 self-assessment.md          # questionnaire d'auto-évaluation rempli
@@ -476,8 +487,10 @@ comparatif (nous vs Hadoop vs Kafka Streams): [report/report.md](report/report.m
 ## 15) Livrables
 
 - Rapport (7 points demandés): [report/report.md](report/report.md)
+- Graphe de la loi d'Amdahl + données: [report/amdahl_speedup.png](report/amdahl_speedup.png), [report/amdahl_results.json](report/amdahl_results.json)
 - Support de démo (10 min, format Marp): [slides/presentation.md](slides/presentation.md)
 - Auto-évaluation remplie: [self-assessment.md](self-assessment.md)
+- Test solo reproductible (sans cluster): [tests/run_all.py](tests/run_all.py)
 
 ## 16) Limites et choix techniques
 
@@ -485,4 +498,4 @@ comparatif (nous vs Hadoop vs Kafka Streams): [report/report.md](report/report.m
 - La robustesse réseau reste dépendante de la stabilité SSH/Wi-Fi du lab.
 - La tolérance aux pannes couvre la mort des **workers** (détection, ré-exécution, écriture atomique, stragglers). La **reprise du master** sur checkpoint est conçue dans le diagramme de séquence mais **non implémentée** dans le code.
 - Si un worker source d'un MAP meurt **pendant** la phase REDUCE, le master revient en phase MAP et ré-exécute tous les reduces (correct mais coûteux).
-- Le test end-to-end de tolérance aux pannes nécessite le cluster Linux (le shuffle SSH ne tourne pas localement sous Windows).
+- La tolérance aux pannes se teste **en solo** via [tests/run_all.py](tests/run_all.py) (shuffle en lecture disque locale, sans `sshd`). Le chemin de shuffle **distant par `ssh cat`** ne s'exerce, lui, que sur le cluster Linux.
