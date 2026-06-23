@@ -105,7 +105,7 @@ fi
 MACHINES_FILE="runtime/machines.txt"
 FILES_TO_UPLOAD=("src/map_reduce/master.py" "src/map_reduce/worker.py" "src/map_reduce/download_commoncrawl.py")
 
-DIR_NAME="slr207-group1-commoncrawl"
+DIR_NAME="slr207-group1-commoncrawl-${USER}"
 NFS_DIR="~/${DIR_NAME}"
 TMP_DIR="/tmp/${DIR_NAME}"
 
@@ -133,7 +133,7 @@ upload_and_download() {
     
     # Étape 1 : Connexion et création du dossier
     logf "Connecting to %-25s" "${host}..."
-    if timeout 5 ssh -n $SSH_OPTS "$host" "mkdir -p ${NFS_DIR}" >/dev/null 2>&1; then
+    if timeout 10 ssh -n $SSH_OPTS "$host" "mkdir -p ${NFS_DIR}" >/dev/null 2>&1; then
         logf "${GREEN}[OK]${NC}\n"
     else
         logf "${RED}[FAILED]${NC}\n"
@@ -142,7 +142,7 @@ upload_and_download() {
     
     # Étape 2 : Téléversement des fichiers indispensables
     logf "Uploading files on NFS%-17s" "..."
-    if timeout 5 scp $SSH_OPTS "${FILES_TO_UPLOAD[@]}" "${host}:${NFS_DIR}/" >/dev/null 2>&1; then
+    if timeout 10 scp $SSH_OPTS "${FILES_TO_UPLOAD[@]}" "${host}:${NFS_DIR}/" >/dev/null 2>&1; then
         logf "${GREEN}[OK]${NC}\n"
     else
         logf "${RED}[FAILED]${NC}\n"
@@ -185,12 +185,17 @@ start_master() {
     
     logf "Starting master process%-16s" "..."
 
-    if timeout 5 ssh -n $SSH_OPTS "$host" \
+    if timeout 25 ssh -n $SSH_OPTS "$host" \
     "rm -rf ${NFS_OUTPUT_DIR} &&
     mkdir -p ${NFS_OUTPUT_DIR} ${REMOTE_LOG_DIR} &&
-    nohup python3 -u ${NFS_DIR}/master.py -p ${MASTER_PORT} -r ${N_REDUCERS} -s ${N_SPLITS} > ${master_log_file} 2>&1 & 
-    sleep 1
-    pgrep -f \"master.py -p ${MASTER_PORT}\" >/dev/null" >/dev/null 2>&1; then
+    nohup python3 -u ${NFS_DIR}/master.py -p ${MASTER_PORT} -r ${N_REDUCERS} -s ${N_SPLITS} > ${master_log_file} 2>&1 &
+    for i in {1..15}; do
+        if pgrep -f \"master.py -p ${MASTER_PORT}\" >/dev/null; then
+            exit 0
+        fi
+        sleep 1
+    done
+    exit 1" >/dev/null 2>&1; then
         logf "${GREEN}[STARTED]${NC}\n"
         return 0
     else
@@ -205,11 +210,16 @@ start_worker() {
     local master_port="$3"
     local worker_log_file="${REMOTE_LOG_DIR}/worker_${host}.log"
     
-    if timeout 5 ssh -n $SSH_OPTS "$host" \
+    if timeout 25 ssh -n $SSH_OPTS "$host" \
     "mkdir -p ${REMOTE_LOG_DIR} &&
-    nohup python3 -u ${NFS_DIR}/worker.py -h ${master_host} -p ${master_port} -i ${NFS_INPUT_DIR} -o ${NFS_OUTPUT_DIR} -l ${LOCAL_MAP_DIR} > ${worker_log_file} 2>&1 & 
-    sleep 1
-    pgrep -f \"worker.py -h ${master_host} -p ${master_port}\" >/dev/null" >/dev/null 2>&1; then
+    nohup python3 -u ${NFS_DIR}/worker.py -h ${master_host} -p ${master_port} -i ${NFS_INPUT_DIR} -o ${NFS_OUTPUT_DIR} -l ${LOCAL_MAP_DIR} > ${worker_log_file} 2>&1 &
+    for i in {1..15}; do
+        if pgrep -f \"worker.py -h ${master_host} -p ${master_port}\" >/dev/null; then
+            exit 0
+        fi
+        sleep 1
+    done
+    exit 1" >/dev/null 2>&1; then
         logf "Starting worker %-25s ${GREEN}[STARTED]${NC}\n" "$host"
         return 0
     else

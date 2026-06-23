@@ -21,10 +21,15 @@
 # ==============================================================================
 
 import argparse
+import gzip
 import json
 import socket
 import threading
 import time
+import urllib.request
+
+BASE_CC_URL    = "https://data.commoncrawl.org/"
+DEFAULT_CRAWL  = "CC-MAIN-2024-10"
 
 
 STATUS_READY_FOR_TASK = "READY_FOR_TASK"
@@ -50,10 +55,12 @@ def normalize_worker_host(host):
 
 
 class MasterServer:
-    def __init__(self, port, n_splits, n_reducers):
+    def __init__(self, port, n_splits, n_reducers, crawl_id=None):
         self.port = port
         self.n_splits = n_splits
         self.n_reducers = n_reducers
+        self.crawl_id = crawl_id  # if set, embed download URLs in MAP tasks
+        self._wet_paths: list[str] = []  # populated by _fetch_wet_paths()
 
         self.lock = threading.Lock()
         self.map_tasks = []
@@ -68,14 +75,35 @@ class MasterServer:
         self.active_connections = 0
         self.job_completed = False
 
+        # Timing (wall-clock, seconds)
+        self.t_start = None
+        self.t_map_end = None
+        self.t_reduce_end = None
+
     def _send_json(self, conn, payload):
         conn.sendall((json.dumps(payload) + "\n").encode("utf-8"))
 
+    def _fetch_wet_paths(self):
+        """Fetch the WET file path list for the configured crawl."""
+        url = f"{BASE_CC_URL}crawl-data/{self.crawl_id}/wet.paths.gz"
+        log("INFO", f"Fetching WET paths from {url} ...")
+        req = urllib.request.Request(url, headers={"User-Agent": "SLR207-MapReduce/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            with gzip.open(resp, "rt") as f:
+                self._wet_paths = [line.strip() for line in f if line.strip()]
+        log("INFO", f"Loaded {len(self._wet_paths)} WET paths for crawl {self.crawl_id}")
+
     def load_tasks(self):
-        self.map_tasks = [
-            {"type": TASK_MAP, "split_id": i, "n_reducers": self.n_reducers}
-            for i in range(self.n_splits)
-        ]
+        if self.crawl_id:
+            self._fetch_wet_paths()
+
+        def make_map_task(i):
+            task = {"type": TASK_MAP, "split_id": i, "n_reducers": self.n_reducers}
+            if self._wet_paths and i < len(self._wet_paths):
+                task["url"] = BASE_CC_URL + self._wet_paths[i]
+            return task
+
+        self.map_tasks = [make_map_task(i) for i in range(self.n_splits)]
         self.total_map_tasks = len(self.map_tasks)
 
         self.reduce_tasks = [{"type": TASK_REDUCE, "reducer_id": i} for i in range(self.n_reducers)]
@@ -111,10 +139,12 @@ class MasterServer:
 
         if self.phase == TASK_MAP and self.completed_tasks == self.total_map_tasks:
             log("INFO", "MAP phase completed; switching to REDUCE")
+            self.t_map_end = time.time()
             self.phase = TASK_REDUCE
             self.completed_tasks = 0
         elif self.phase == TASK_REDUCE and self.completed_tasks == self.total_reduce_tasks:
             log("INFO", "REDUCE phase completed; job finished")
+            self.t_reduce_end = time.time()
             self.job_completed = True
 
     def handle_worker(self, conn, addr):
@@ -160,8 +190,10 @@ class MasterServer:
         log("INFO", f"Worker disconnected: {worker_host}")
 
     def run(self):
-        self.load_tasks()
-
+        # Bind the socket BEFORE loading tasks so that workers can connect and
+        # queue up while the master is still fetching wet.paths.gz.
+        # Workers that connect early will receive TASK_WAIT until load_tasks()
+        # finishes and populates self.map_tasks.
         server = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
         server.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -170,6 +202,10 @@ class MasterServer:
         server.settimeout(1)
         log("INFO", f"Listening on port {self.port} (dual-stack), reducers={self.n_reducers}")
 
+        self.load_tasks()  # may fetch wet.paths.gz; workers wait via TASK_WAIT
+        log("INFO", "Tasks ready — accepting work")
+
+        self.t_start = time.time()
         try:
             while True:
                 with self.lock:
@@ -188,17 +224,33 @@ class MasterServer:
         finally:
             server.close()
 
+        # Emit structured timing line for amdahl_bench.py to parse
+        if self.t_start and self.t_reduce_end:
+            t_total = self.t_reduce_end - self.t_start
+            t_map   = (self.t_map_end - self.t_start) if self.t_map_end else 0.0
+            t_reduce = (self.t_reduce_end - self.t_map_end) if self.t_map_end else t_total
+            print(
+                f"TIMING: {{\"t_total\": {t_total:.3f}, "
+                f"\"t_map\": {t_map:.3f}, "
+                f"\"t_reduce\": {t_reduce:.3f}}}",
+                flush=True,
+            )
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Master Server pour MapReduce")
-    parser.add_argument("-p", "--port", type=int, default=54321, help="Port d'ecoute (defaut: 54321)")
-    parser.add_argument("-s", "--splits", type=int, default=10, help="Nombre de splits MAP (defaut: 10)")
-    parser.add_argument("-r", "--reducers", type=int, default=10, help="Nombre de reducers (defaut: 10)")
+    parser.add_argument("-p", "--port",     type=int, default=54321, help="Port d'ecoute (defaut: 54321)")
+    parser.add_argument("-s", "--splits",   type=int, default=10,    help="Nombre de splits MAP (defaut: 10)")
+    parser.add_argument("-r", "--reducers", type=int, default=10,    help="Nombre de reducers (defaut: 10)")
+    parser.add_argument("-c", "--crawl",    default=None,
+                        help=f"CommonCrawl crawl ID to embed download URLs in tasks (e.g. {DEFAULT_CRAWL}). "
+                             "Workers download splits on-demand to /tmp if NFS file is missing.")
     args = parser.parse_args()
 
     master = MasterServer(
         port=args.port,
         n_reducers=args.reducers,
-        n_splits=args.splits
+        n_splits=args.splits,
+        crawl_id=args.crawl,
     )
     master.run()

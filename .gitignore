@@ -5,4 +5,9 @@ machines.txt
 runtime/
 __pycache__/
 *.egg-info/
+
+.env
+client_timings.json
+amdahl_results*.json
+amdahl_speedup*.png
 venv/
