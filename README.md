@@ -77,6 +77,11 @@ Host tp-*
 
 ## 2bis) Test solo en une commande
 
+> **Procédure de test complète sur le cluster Telecom :** voir le guide dédié
+> [doc/TESTING.md](doc/TESTING.md) (déploiement, monitoring, validation, tolérance aux
+> pannes, Amdahl, Kafka, nettoyage — avec exemples de sortie réels). Le mode solo
+> ci-dessous reste utile pour valider le code sans accès au cluster.
+
 Pas besoin de toute l'équipe ni du cluster Telecom pour valider le système : le
 harnais [tests/run_all.py](tests/run_all.py) lance un **cluster MapReduce complet sur
 votre seule machine** (le master plus N workers comme processus séparés sur
@@ -169,6 +174,7 @@ slides/
 self-assessment.md          # questionnaire d'auto-évaluation rempli
 
 doc/
+  TESTING.md                # guide de test complet sur le cluster Telecom
   fault_tolerance/
   map_reduce/
   guidelines/
