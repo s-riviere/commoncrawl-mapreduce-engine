@@ -40,11 +40,22 @@ def amdahl(N, f):
 def load_results(path):
     with open(path) as fp:
         data = json.load(fp)
+    # Back-compat: an older format stored {"times": {"1": t1, "2": t2, ...}}.
+    # Normalise it to the list-of-records schema the rest of the script expects.
+    if isinstance(data, dict) and "times" in data:
+        data = [
+            {"n_workers": int(n), "t_total": t, "t_map": 0.0, "t_reduce": 0.0}
+            for n, t in data["times"].items()
+        ]
     # Filter out failed runs
-    valid = [r for r in data if r["t_total"] is not None]
+    valid = [r for r in data if r.get("t_total") is not None]
     if not valid:
         print("ERROR: no valid timing results in file.")
         sys.exit(1)
+    # Ensure phase fields always exist so the breakdown plot never crashes.
+    for r in valid:
+        r.setdefault("t_map", 0.0)
+        r.setdefault("t_reduce", 0.0)
     return sorted(valid, key=lambda r: r["n_workers"])
 
 

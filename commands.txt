@@ -1,0 +1,22 @@
+# Deploy a distributed job
+bash scripts/deploy_commoncrawl.sh -w 8 -r 8 -s 20 -j bigram
+
+# Demo fault tolerance (2nd terminal, mid-job)
+bash scripts/fault_tolerance_demo.sh -n 1
+
+# Validate correctness
+python3 src/map_reduce/validate.py -i <input> -o <output> -j bigram
+
+# Kafka comparison
+bash scripts/kafka/deploy_kafka.sh && bash scripts/kafka/run_wordcount.sh <file>
+
+# Clean up
+bash scripts/kill_commoncrawl.sh -d
+
+
+
+# One Person Test
+. .venv/bin/activate          # matplotlib/numpy/scipy déjà installés
+python3 tests/run_all.py      # suite complète, 9/9
+# démo manuelle :
+bash scripts/local_cluster.sh -i <dossier_splits> -n 4 --validate

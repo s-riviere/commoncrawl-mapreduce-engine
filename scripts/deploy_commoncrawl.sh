@@ -13,12 +13,13 @@
 #   -w num  : Number of worker machines to deploy (default: 10)
 #   -r num  : Number of reducers for the Master (default: 10)
 #   -s num  : Number of splits to process (download only if input has fewer)
+#   -j job  : Analysis to run: wordcount|lang|wordlen|bigram (default: wordcount)
 #
 # Usage : 
 #   ./deploy.sh -h
 #   ./deploy.sh -p 60000 -w 5 -r 4
 #   ./deploy.sh -p 54321 -w 12 -r 12 -s 20
-#   ./deploy.sh -w 8 -r 8
+#   ./deploy.sh -w 8 -r 8 -j lang
 # ==============================================================================
 
 
@@ -45,10 +46,11 @@ MASTER_PORT="54321"
 N_REDUCERS="10"
 N_SPLITS="10"
 N_WORKERS="10"
+JOB="wordcount"
 
 usage() {
     local exit_code="${1:-1}"
-    echo "Usage: $0 [-h] [-p master_port] [-w n_workers] [-r n_reducers] [-s cc_splits]" >&2
+    echo "Usage: $0 [-h] [-p master_port] [-w n_workers] [-r n_reducers] [-s cc_splits] [-j job]" >&2
     echo "" >&2
     echo "Options:" >&2
     echo "  -h : Display this help message" >&2
@@ -56,17 +58,19 @@ usage() {
     echo "  -w : Number of worker machines to deploy (default: 10)" >&2
     echo "  -r : Number of reducers (default: 10)" >&2
     echo "  -s : Number of splits to process (default: 10)" >&2
+    echo "  -j : Analysis job wordcount|lang|wordlen|bigram (default: wordcount)" >&2
     exit "$exit_code"
 }
 
-# Analyse des options avec getopts (retrait de c)
-while getopts "hp:w:r:s:" opt; do
+# Analyse des options avec getopts
+while getopts "hp:w:r:s:j:" opt; do
     case "${opt}" in
         h) usage 0 ;;
         p) MASTER_PORT="${OPTARG}" ;;
         w) N_WORKERS="${OPTARG}" ;;
         r) N_REDUCERS="${OPTARG}" ;;
         s) N_SPLITS="${OPTARG}" ;;
+        j) JOB="${OPTARG}" ;;
         *) usage 1 ;;
     esac
 done
@@ -95,6 +99,15 @@ if [[ ! "$N_WORKERS" =~ ^[0-9]+$ ]]; then
     echo -e "${RED}Error: Le nombre de workers spécifié (${N_WORKERS}) doit être un entier valide.${NC}" >&2
     exit 1
 fi
+
+# Validation du job (doit appartenir à la liste supportée)
+case "$JOB" in
+    wordcount|lang|wordlen|bigram) ;;
+    *)
+        echo -e "${RED}Error: Job invalide (${JOB}). Choix: wordcount, lang, wordlen, bigram.${NC}" >&2
+        exit 1
+        ;;
+esac
 
 
 # ==============================================================================
@@ -188,7 +201,7 @@ start_master() {
     if timeout 25 ssh -n $SSH_OPTS "$host" \
     "rm -rf ${NFS_OUTPUT_DIR} &&
     mkdir -p ${NFS_OUTPUT_DIR} ${REMOTE_LOG_DIR} &&
-    nohup python3 -u ${NFS_DIR}/master.py -p ${MASTER_PORT} -r ${N_REDUCERS} -s ${N_SPLITS} > ${master_log_file} 2>&1 &
+    nohup python3 -u ${NFS_DIR}/master.py -p ${MASTER_PORT} -r ${N_REDUCERS} -s ${N_SPLITS} -j ${JOB} > ${master_log_file} 2>&1 &
     for i in {1..15}; do
         if pgrep -f \"master.py -p ${MASTER_PORT}\" >/dev/null; then
             exit 0
@@ -212,7 +225,7 @@ start_worker() {
     
     if timeout 25 ssh -n $SSH_OPTS "$host" \
     "mkdir -p ${REMOTE_LOG_DIR} &&
-    nohup python3 -u ${NFS_DIR}/worker.py -h ${master_host} -p ${master_port} -i ${NFS_INPUT_DIR} -o ${NFS_OUTPUT_DIR} -l ${LOCAL_MAP_DIR} > ${worker_log_file} 2>&1 &
+    nohup python3 -u ${NFS_DIR}/worker.py -h ${master_host} -p ${master_port} -i ${NFS_INPUT_DIR} -o ${NFS_OUTPUT_DIR} -l ${LOCAL_MAP_DIR} -j ${JOB} --worker-id ${host} > ${worker_log_file} 2>&1 &
     for i in {1..15}; do
         if pgrep -f \"worker.py -h ${master_host} -p ${master_port}\" >/dev/null; then
             exit 0
@@ -262,6 +275,7 @@ echo -e "================================================="
 echo -e ""
 echo -e "Processing files, dependencies and starting Master on first available machine."
 echo -e "Requested splits : ${N_SPLITS} (download only if input has fewer)."
+echo -e "Analysis job     : ${JOB}."
 echo -e ""
 
 master_host=""
