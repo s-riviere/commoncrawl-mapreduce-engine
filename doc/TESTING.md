@@ -70,6 +70,32 @@ Architecture (cluster) :
 Le code n'a **aucune dépendance Python obligatoire** côté cluster : `numpy` est un
 accélérateur optionnel (repli Python pur automatique s'il est absent).
 
+### 2.1 Conventions de notation (à lire avant de commencer)
+
+Toutes les commandes de ce guide sont prévues pour un terminal **Linux / bash** ordinaire
+(c'est celui des machines de TP et de toute distribution Linux). Quatre notations
+reviennent ; comprenez-les une fois et tout le reste se lit sans surprise :
+
+| Notation | Ce que c'est | Faut-il la remplacer ? |
+|----------|--------------|------------------------|
+| `~` | votre dossier personnel (« home »), p. ex. `/home/jdupont` | non, le shell s'en charge |
+| `$USER` | variable **remplie automatiquement** par Linux avec votre identifiant de connexion (votre login Telecom) | non, tapez la commande telle quelle |
+| `$(hostname)` | remplacé automatiquement par le nom de la machine où la commande s'exécute | non |
+| `<quelque-chose>` ou `tp-XXXX` | un **trou à remplir vous-même** (ce n'est PAS une variable) : un login, un nom de machine, etc. | **oui**, remplacez-le |
+
+Deux réflexes utiles :
+
+```bash
+echo "$USER"                              # affiche votre login (ce que $USER vaut chez vous)
+ls -d ~/slr207-group1-commoncrawl-*       # retrouve le nom exact du dossier de travail partagé
+```
+
+> **Pourquoi `$USER` apparaît dans les chemins ?** Les scripts créent un dossier de travail
+> dont le nom contient votre login pour que deux personnes du même groupe ne se marchent
+> pas dessus. Ce dossier s'appelle **toujours** `~/slr207-group1-commoncrawl-$USER` ; comme
+> `$USER` est identique sur votre machine et sur les machines Telecom (même compte), vous
+> pouvez copier-coller les commandes sans rien changer.
+
 ---
 
 ## 3. Préparation de l'accès SSH
@@ -125,7 +151,7 @@ Options utiles :
 
 ```bash
 bash scripts/deploy_cpuload.sh 54555            # port personnalisé
-python3 src/cpu_load/client.py 54555 --sync <host_reference>   # horloge de référence
+python3 src/cpu_load/client.py 54555 --sync tp-XXXX   # tp-XXXX = machine servant d'horloge de référence
 bash scripts/kill_cpuload.sh 54555
 ```
 
@@ -166,12 +192,21 @@ Ce que fait le script, en 4 phases (affichées à l'écran) :
  Phase 3 : Monitoring MapReduce Execution
 ```
 
-- **Emplacements** sur chaque machine :
-  - Entrée (NFS, partagé) : `~/slr207-group1-commoncrawl-$USER/input/commoncrawl-*.txt`
-  - Sortie (NFS, partagé) : `~/slr207-group1-commoncrawl-$USER/output/part-*.txt`
-  - Partitions MAP intermédiaires (disque **local**) : `/tmp/slr207-group1-commoncrawl-$USER/map-outputs/`
-  - Logs : `/tmp/slr207-group1-commoncrawl-$USER/logs/<timestamp>/master_*.log` et `worker_*.log`
-- `Ctrl+C` pendant la phase 3 **détache** le monitoring ; le job continue en arrière-plan.
+- **Emplacements** des fichiers (rappel : `$USER` = votre login, voir §2.1) :
+  - Entrée (dossier **partagé** par NFS, visible depuis toutes les machines) :
+    `~/slr207-group1-commoncrawl-$USER/input/commoncrawl-*.txt`
+  - Sortie (dossier **partagé**) : `~/slr207-group1-commoncrawl-$USER/output/part-*.txt`
+  - Partitions MAP intermédiaires (disque **local** à chaque machine, dans `/tmp`) :
+    `/tmp/slr207-group1-commoncrawl-$USER/map-outputs/`
+  - Logs (local, dans `/tmp`) : `/tmp/slr207-group1-commoncrawl-$USER/logs/<date-heure>/master_*.log` et `worker_*.log`
+
+  > « NFS » = système de fichiers réseau : votre dossier personnel est le **même** sur
+  > toutes les machines de TP. Écrire un fichier depuis une machine le rend lisible par
+  > toutes les autres — c'est ce qui permet au master et aux workers de partager l'entrée
+  > et la sortie.
+
+- `Ctrl+C` pendant la phase 3 **détache** seulement l'affichage du log ; le job, lui,
+  **continue** de tourner sur le cluster en arrière-plan.
 
 ### 5.2 Exemple de sortie réel
 
@@ -212,17 +247,30 @@ La sortie distribuée est comparée à un **calcul mono-machine de référence**
 ([src/map_reduce/validate.py](../src/map_reduce/validate.py)) : mêmes clés distinctes,
 même total, et égalité clé par clé.
 
-`validate.py` n'étant pas uploadé par le déploiement, copiez-le une fois sur le NFS puis
-lancez-le sur une machine du lab (le HOME NFS est partagé, donc n'importe quelle machine
-voit `input/` et `output/`) :
+`validate.py` n'est pas copié automatiquement par le déploiement. La marche à suivre tient
+en deux gestes : (1) copier l'outil dans le dossier de travail partagé, (2) le lancer sur la
+machine du master (comme le dossier personnel est partagé par NFS, cette machine voit déjà
+les sous-dossiers `input/` et `output/`).
+
+**Une seule chose à remplacer** : `tp-XXXX`, par le nom de la machine où le master a démarré
+(ce nom est affiché pendant la **Phase 1** du déploiement, à la ligne « Master Bootstrap »).
 
 ```bash
-NFS=~/slr207-group1-commoncrawl-$USER
-MASTER=tp-1a201-02.enst.fr          # la machine où le master a démarré (affichée en phase 1)
+# (1) Copier l'outil de validation dans le dossier de travail partagé.
+#     ~/slr207-group1-commoncrawl-$USER est ce dossier ; $USER se remplit tout seul (§2.1).
+scp src/map_reduce/validate.py tp-XXXX:~/slr207-group1-commoncrawl-$USER/
 
-scp src/map_reduce/validate.py "$MASTER:$NFS/"
-ssh "$MASTER" "python3 $NFS/validate.py -i $NFS/input -o $NFS/output -j wordcount"
+# (2) Lancer la validation SUR la machine du master, via ssh.
+#     -i = dossier d'entrée (référence)   -o = dossier de sortie distribuée   -j = analyse testée
+ssh tp-XXXX "python3 ~/slr207-group1-commoncrawl-$USER/validate.py \
+    -i ~/slr207-group1-commoncrawl-$USER/input \
+    -o ~/slr207-group1-commoncrawl-$USER/output \
+    -j wordcount"
 ```
+
+> Le `\` en fin de ligne signifie simplement « la commande continue à la ligne suivante » :
+> vous pouvez aussi tout écrire sur une seule ligne. Les guillemets autour du `python3 …`
+> servent à envoyer toute la commande à la machine distante en un bloc.
 
 Sortie **réelle** (capturée en exécution) — le `✅ PASS` est la preuve de correction :
 
@@ -310,29 +358,49 @@ Surveillez le `TIMING` final et les `WORKER_TIMING` pour repérer les goulots.
 ### 5.7 Lecture directe sans NFS + scratch
 
 **Lecture directe Common Crawl (day4 §2)** — supprime totalement l'intermédiaire NFS :
-démarrez le master avec `--crawl <ID>` (il embarque l'URL WET dans chaque tâche MAP) et
-les workers avec `--direct-read` (stream + décompression **en mémoire**, sans fichier).
-Le déploiement standard n'expose pas encore ces flags ; pour un test ciblé, lancez
-master/worker à la main :
+démarrez le master avec `--crawl <ID>` (il embarque l'URL de téléchargement dans chaque
+tâche MAP) et les workers avec `--direct-read` (téléchargement + décompression **en
+mémoire**, sans écrire de fichier). Le déploiement standard n'expose pas encore ces options ;
+pour un test ciblé, on lance le master puis les workers à la main.
+
+À remplacer : `tp-MASTER` (machine choisie pour le master) et `tp-WORKER` (chacune des
+machines workers). Le reste se remplit tout seul.
 
 ```bash
-NFS=~/slr207-group1-commoncrawl-$USER
-# Sur le master :
-python3 $NFS/master.py -p 54321 -r 8 -s 20 -j wordcount --crawl CC-MAIN-2024-10
-# Sur chaque worker :
-python3 $NFS/worker.py -h <master> -p 54321 -i $NFS/input -o $NFS/output \
-    -l /tmp/mr/$USER --worker-id $(hostname) --direct-read
+# Sur la machine du master :
+ssh tp-MASTER "python3 ~/slr207-group1-commoncrawl-$USER/master.py \
+    -p 54321 -r 8 -s 20 -j wordcount --crawl CC-MAIN-2024-10"
+
+# Sur CHAQUE machine worker (répétez en changeant tp-WORKER) :
+ssh tp-WORKER "python3 ~/slr207-group1-commoncrawl-$USER/worker.py \
+    -h tp-MASTER -p 54321 \
+    -i ~/slr207-group1-commoncrawl-$USER/input \
+    -o ~/slr207-group1-commoncrawl-$USER/output \
+    -l /tmp/mapreduce-$USER \
+    --worker-id \$(hostname) --direct-read"
 ```
 
-**Espace scratch (day4 §2, au-delà de `/tmp`)** — `/tmp` peut être un `tmpfs` réduit qui
-sature sous des centaines de téléchargements concurrents.
-[scripts/find_scratch.sh](../scripts/find_scratch.sh) inspecte les montages
-(`df`/`mount`), exclut le NFS et recommande la plus grande partition locale inscriptible :
+> `--worker-id \$(hostname)` : l'antislash devant `$(hostname)` fait que le nom est calculé
+> **sur la machine worker** (et non sur la vôtre). Chaque worker reçoit ainsi un identifiant
+> unique égal à son propre nom de machine.
+
+**Espace « scratch » (day4 §2, au-delà de `/tmp`)** — sur certaines machines `/tmp` est un
+petit disque en mémoire (`tmpfs`) qui peut se remplir quand des centaines de téléchargements
+arrivent en même temps. Le script [scripts/find_scratch.sh](../scripts/find_scratch.sh)
+inspecte les disques de la machine, ignore le NFS, et recommande la plus grande partition
+**locale** où l'on a le droit d'écrire.
 
 ```bash
-ssh <node> 'bash -s' < scripts/find_scratch.sh
-# puis pointez le worker dessus :
-python3 $NFS/worker.py ... --spill-dir <scratch> -l <scratch>/map-outputs
+# Demander à une machine quel disque local utiliser (remplacez tp-NODE par son nom) :
+ssh tp-NODE "bash -s" < scripts/find_scratch.sh
+```
+
+Le script affiche un dossier conseillé (par exemple `/local/scratch`). Il suffit alors
+d'ajouter deux options à la commande du worker ci-dessus — en remplaçant le chemin par
+celui qu'il a conseillé :
+
+```text
+    --spill-dir /local/scratch  -l /local/scratch/map-outputs
 ```
 
 ---
@@ -362,7 +430,9 @@ points** d'une même courbe, et le point de référence est `S(1) = 1`. Avec ≥
 
 ## 7. Comparaison Kafka Streams + connecteur source
 
-Broker Kafka 4.3 mono-nœud en **KRaft**, **sans Docker ni root**, sous `/tmp/<user>-kafka` :
+Broker Kafka 4.3 mono-nœud en mode **KRaft**, **sans Docker ni privilèges root**. Il
+s'installe dans `/tmp/<votre-login>-kafka` (le `<votre-login>` est rempli automatiquement
+par les scripts) :
 
 ```bash
 bash scripts/kafka/deploy_kafka.sh                         # télécharge + démarre le broker
