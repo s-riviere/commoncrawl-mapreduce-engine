@@ -5,3 +5,4 @@ machines.txt
 runtime/
 __pycache__/
 *.egg-info/
+venv/
