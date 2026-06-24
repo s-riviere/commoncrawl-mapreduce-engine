@@ -13,11 +13,11 @@
 #   -r, --reducers  : Number of REDUCE tasks.
 #
 # Usage :
-#   python3 src/map_reduce/master.py -p <port> -s <splits> -r <reducers>
+#   python3 src/mapreduce/master.py -p <port> -s <splits> -r <reducers>
 #
 # Examples:
-#   python3 src/map_reduce/master.py -p 54321 -s 10 -r 10
-#   python3 src/map_reduce/master.py -p 60000 -s 20 -r 12
+#   python3 src/mapreduce/master.py -p 54321 -s 10 -r 10
+#   python3 src/mapreduce/master.py -p 60000 -s 20 -r 12
 # ==============================================================================
 
 import argparse
@@ -51,10 +51,18 @@ TASK_SHUTDOWN = "SHUTDOWN"
 # declared DEAD and its tasks are reclaimed.  This detects both a killed
 # process (TCP closes immediately) and a network partition (lease expires).
 HEARTBEAT_INTERVAL = 2.0   # worker → master, seconds
-LEASE_TIMEOUT = 10.0       # master declares a worker dead after this silence
+# A single MAP over a real ~285 MB Common Crawl WET split takes ~30 s of
+# GIL-bound pure-Python compute (regex tokenise + Counter), during which the
+# worker's background heartbeat thread cannot acquire the GIL to ping. The
+# lease must therefore comfortably exceed one task's wall time, otherwise a
+# busy but perfectly healthy worker is wrongly declared dead. A genuine crash
+# still closes the TCP socket and is detected immediately, regardless of this
+# value, so raising it does not slow down real failure detection.
+LEASE_TIMEOUT = 60.0       # master declares a worker dead after this silence
 # A still-running MAP task older than this is eligible for a backup copy on an
-# otherwise-idle worker (Google MapReduce §3.6 straggler mitigation).
-STRAGGLER_THRESHOLD = 30.0
+# otherwise-idle worker (Google MapReduce §3.6 straggler mitigation). Kept well
+# above a normal real-split MAP (~30 s) to avoid spurious backup copies.
+STRAGGLER_THRESHOLD = 90.0
 
 
 def log(level, message):

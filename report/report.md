@@ -38,10 +38,10 @@ no HDFS, and no root access.
                          final part-*.txt written to NFS (atomic)
 ```
 
-* **Main** ([src/map_reduce/master.py](../src/map_reduce/master.py)) owns the task
+* **Main** ([src/mapreduce/master.py](../src/mapreduce/master.py)) owns the task
   queues, drives the `MAP → REDUCE` barrier, and detects/recovers from worker failures.
   It never touches the data itself — it only routes metadata.
-* **Workers** ([src/map_reduce/worker.py](../src/map_reduce/worker.py)) request work,
+* **Workers** ([src/mapreduce/worker.py](../src/mapreduce/worker.py)) request work,
   run MAP or REDUCE, and report completion. Map intermediates are written to the
   **local disk** (`/tmp`), never to NFS. Reducers pull their partitions directly from
   the map workers over SSH (the "remote read" of Figure 1 in the paper).
@@ -56,7 +56,7 @@ no HDFS, and no root access.
 | Logs | Local `/tmp/.../logs/<timestamp>` | Per-run, off-NFS |
 
 The default scratch base is `/tmp`, but `/tmp` can be a small RAM-backed `tmpfs` that
-saturates under hundreds of concurrent MAP downloads. [scripts/find_scratch.sh](../scripts/find_scratch.sh)
+saturates under hundreds of concurrent MAP downloads. [src/benchmarks/find_scratch.sh](../src/benchmarks/find_scratch.sh)
 inspects the mounts (`df`/`mount`), excludes NFS/pseudo filesystems, and recommends the
 largest **local writable** partition; the worker's `--spill-dir` then redirects staging there.
 
@@ -68,7 +68,7 @@ files for a crawl is `crawl-data/<CRAWL_ID>/wet.paths.gz`.
 
 Two ingestion paths are implemented:
 
-1. **Pre-download to NFS** with [src/map_reduce/download_commoncrawl.py](../src/map_reduce/download_commoncrawl.py)
+1. **Pre-download to NFS** with [src/mapreduce/download_commoncrawl.py](../src/mapreduce/download_commoncrawl.py)
    (`--missing-only` makes it idempotent).
 2. **Direct read from Amazon** — when the master is started with `--crawl <ID>`, it
    embeds the WET URL in each MAP task and the worker fetches the split from
@@ -149,13 +149,13 @@ Every phase is timed and emitted as machine-parseable log lines:
   `t_compute` (MAP) and `t_shuffle`, `t_compute`, `t_io_write` (REDUCE).
 
 Two harnesses parse these lines and write `runtime/amdahl_results.json`, which
-`plot_amdahl.py` renders into `runtime/amdahl_speedup.png`:
+`src/benchmarks/plot_amdahl.py` renders into `runtime/amdahl_speedup.png`:
 
 * [tests/run_all.py](../tests/run_all.py) — a **single-machine, one-person** harness
   (multiple workers as separate processes on `localhost`, local-disk shuffle). Anyone
   can reproduce the full pipeline — correctness, fault tolerance, and the Amdahl
   sweep — with one command and no cluster.
-* [amdahl_bench.py](../amdahl_bench.py) — the **multi-node cluster** sweep (N = 1, 2,
+* [src/benchmarks/amdahl_bench.py](../src/benchmarks/amdahl_bench.py) — the **multi-node cluster** sweep (N = 1, 2,
   4, 8, 16, 32 real machines over SSH), identical methodology, larger N.
 
 Both keep the **same dataset at every point**, as the brief requires.
@@ -215,13 +215,13 @@ which inflates `f` relative to a real cluster. Two structural limits also cap th
 beyond `N = #splits` there is simply no more MAP work to hand out, and per-worker fixed
 costs grow with `N`.
 
-On the **multi-node cluster** (`amdahl_bench.py`, N up to 32 independent machines) the
+On the **multi-node cluster** (`src/benchmarks/amdahl_bench.py`, N up to 32 independent machines) the
 same methodology applies but each worker owns its own memory bandwidth and disk, so the
 serial fraction drops and the ceiling rises toward `~4–5×`; speedup peaks once workers
 outnumber the splits and then flattens. Optimisations (§3.3) lower absolute time but
 do **not** change `f` much — the curve keeps its shape, just lower. This is textbook
 Amdahl behaviour, demonstrated empirically and reproducibly. (Data:
-[report/amdahl_results.json](amdahl_results.json) → `plot_amdahl.py`; figure:
+[report/amdahl_results.json](amdahl_results.json) → `src/benchmarks/plot_amdahl.py`; figure:
 [report/amdahl_speedup.png](amdahl_speedup.png).)
 
 ---
@@ -234,7 +234,7 @@ Amdahl behaviour, demonstrated empirically and reproducibly. (Data:
 * **SSH fan-in / IDS.** Opening many parallel `ssh` connections per host during shuffle
   risked tripping `fail2ban`. **Fix:** SSH `ControlMaster=auto` multiplexing — the
   server sees one real TCP connection per host regardless of parallelism — plus a
-  `max_ssh` cap (empirically optimal at 6–8, see `ssh_parallelism_sweep.py`).
+  `max_ssh` cap (empirically optimal at 6–8, see `src/benchmarks/ssh_parallelism_sweep.py`).
 * **A single dead worker froze the whole job (V1).** With no failure detection,
   `completed_tasks` never reached the total and the master hung forever; recovery meant
   killing the master by hand. **Fix:** the V2 fault-tolerance protocol (heartbeats,
@@ -253,7 +253,7 @@ Amdahl behaviour, demonstrated empirically and reproducibly. (Data:
 
 All four analyses share the **same** distributed engine (same shuffle/reduce: sum by key,
 sort desc). Only the MAP keying differs (`MapReduceWorker._map_emit`), selected with
-`-j/--job`. Run any of them with, e.g. `bash scripts/deploy_commoncrawl.sh -w 8 -r 8 -s 20 -j lang`.
+`-j/--job`. Run any of them with, e.g. `bash src/deploy/deploy_commoncrawl.sh -w 8 -r 8 -s 20 -j lang`.
 
 1. **`lang` — language popularity / ranking.** *Question: which languages dominate the
    crawl?* MAP tallies hits against small per-language **stop-word** sets (en, fr, de,
@@ -316,15 +316,15 @@ re-execution, backup tasks) to understand them.
 
 We deploy a single-node Kafka 4.3 broker in **KRaft mode** from the downloaded release —
 **no Docker, no root** — under a per-user `/tmp` dir
-([scripts/kafka/deploy_kafka.sh](../scripts/kafka/deploy_kafka.sh)), then run the built-in
+([src/kafka/deploy_kafka.sh](../src/kafka/deploy_kafka.sh)), then run the built-in
 `WordCountDemo` over a Common Crawl split
-([scripts/kafka/run_wordcount.sh](../scripts/kafka/run_wordcount.sh)) and tear it down
-([scripts/kafka/clean_kafka.sh](../scripts/kafka/clean_kafka.sh)). The final counts match
+([src/kafka/run_wordcount.sh](../src/kafka/run_wordcount.sh)) and tear it down
+([src/kafka/clean_kafka.sh](../src/kafka/clean_kafka.sh)). The final counts match
 our batch system; the difference is *operational*: Kafka keeps the result live and
 updates it as new data arrives, whereas our job produces one final answer and exits.
 
 **Common Crawl → Kafka source connector.** A KISS source
-([scripts/kafka/commoncrawl_source.sh](../scripts/kafka/commoncrawl_source.sh)) connects
+([src/kafka/commoncrawl_source.sh](../src/kafka/commoncrawl_source.sh)) connects
 the external source (Common Crawl on S3/HTTPS) to the input topic with **zero intermediate
 files**: it resolves a split from `wet.paths.gz`, then streams + gunzips + strips WARC
 headers on the fly and produces each line into `streams-plaintext-input`. The NFS is never
@@ -337,9 +337,9 @@ It is wired into the demo via `run_wordcount.sh --crawl <CRAWL_ID> [--index N]`.
 
 * Amdahl sweep (one person, no cluster): `python3 tests/run_all.py` regenerates
   `runtime/amdahl_results.json` **and** renders `runtime/amdahl_speedup.png`.
-  For the multi-node sweep, run `amdahl_bench.py` on the lab machines, copy
-  `runtime/amdahl_results.json` locally, then `python plot_amdahl.py`.
-* Correctness: `python3 src/map_reduce/validate.py -i <input> -o <output> -j <job>`.
+  For the multi-node sweep, run `src/benchmarks/amdahl_bench.py` on the lab machines, copy
+  `runtime/amdahl_results.json` locally, then `python src/benchmarks/plot_amdahl.py`.
+* Correctness: `python3 src/mapreduce/validate.py -i <input> -o <output> -j <job>`.
 * Fault-tolerance demo: start a job, then in another terminal
-  `bash scripts/fault_tolerance_demo.sh -n 1`, watch the master recover, and re-run
+  `bash src/deploy/fault_tolerance_demo.sh -n 1`, watch the master recover, and re-run
   `validate.py` to confirm the output is still correct.

@@ -37,9 +37,9 @@ import threading
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MASTER = os.path.join(ROOT, "src", "map_reduce", "master.py")
-WORKER = os.path.join(ROOT, "src", "map_reduce", "worker.py")
-VALIDATE = os.path.join(ROOT, "src", "map_reduce", "validate.py")
+MASTER = os.path.join(ROOT, "src", "mapreduce", "master.py")
+WORKER = os.path.join(ROOT, "src", "mapreduce", "worker.py")
+VALIDATE = os.path.join(ROOT, "src", "mapreduce", "validate.py")
 PY = sys.executable
 
 BASE = f"/tmp/mr-solo-{os.getenv('USER', 'user')}"
@@ -277,7 +277,7 @@ def test_amdahl(results, counts=(1, 2, 4)):
     # Render the figure too, if the plotting deps are present.
     try:
         subprocess.run(
-            [PY, os.path.join(ROOT, "plot_amdahl.py"),
+            [PY, os.path.join(ROOT, "src", "benchmarks", "plot_amdahl.py"),
              "--input", out_json,
              "--output", os.path.join(ROOT, "runtime", "amdahl_speedup.png")],
             check=True, capture_output=True, text=True, cwd=ROOT,

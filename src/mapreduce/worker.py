@@ -14,10 +14,10 @@
 #   -l, --local-map-dir  : Local directory for intermediate MAP partitions.
 #
 # Usage :
-#   python3 src/map_reduce/worker.py -h <host> -p <port> -i <input> -o <output> -l <local_map>
+#   python3 src/mapreduce/worker.py -h <host> -p <port> -i <input> -o <output> -l <local_map>
 #
 # Examples:
-#   python3 src/map_reduce/worker.py -h tp-1a201-02.enst.fr -p 54321 -i ~/slr207-group1-bis/input -o ~/slr207-group1-bis/output -l /tmp/slr207-group1-bis/map-outputs
+#   python3 src/mapreduce/worker.py -h tp-1a201-02.enst.fr -p 54321 -i ~/slr207-group1-bis/input -o ~/slr207-group1-bis/output -l /tmp/slr207-group1-bis/map-outputs
 # ==============================================================================
 
 import argparse
@@ -118,7 +118,7 @@ class MapReduceWorker:
         self.direct_read = bool(direct_read)
         # §2 spill dir: base for transient on-disk staging (the NFS-absent
         # download fallback). Point it at a large scratch partition (discovered
-        # with scripts/find_scratch.sh) instead of the small default /tmp.
+        # with src/benchmarks/find_scratch.sh) instead of the small default /tmp.
         self.spill_dir = os.path.expanduser(spill_dir)
         # Unique identity: lets several workers run on the SAME host (solo/local
         # test mode). Defaults to host:pid, which is unique per machine on the
@@ -155,9 +155,23 @@ class MapReduceWorker:
         log("INFO", f"Local map directory ready: {self.local_map_dir} ({self._t_clean:.2f}s)")
 
     def _send_json_line(self, payload):
-        """Send JSON-encoded message to master (thread-safe)."""
+        """Send JSON-encoded message to master (thread-safe).
+
+        On a lost connection (e.g. the master wrongly judged us dead during a
+        long GIL-bound MAP), flag a clean shutdown instead of letting the
+        exception crash the process: the master has already reclaimed our
+        tasks, so there is nothing left to do but exit quietly.
+        """
         with self._send_lock:
-            send_json_line(self.socket, payload)
+            if self._stop.is_set():
+                return
+            try:
+                send_json_line(self.socket, payload)
+            except (BrokenPipeError, ConnectionResetError, OSError) as e:
+                if not self._stop.is_set():
+                    log("WARN", f"Lost connection to master "
+                                f"({e.__class__.__name__}); shutting down cleanly.")
+                self._stop.set()
 
     def _heartbeat_loop(self):
         """Background liveness ping so the master can detect a dead worker."""
@@ -495,9 +509,11 @@ class MapReduceWorker:
         # Start the liveness heartbeat once the socket is up.
         threading.Thread(target=self._heartbeat_loop, daemon=True).start()
 
-        while True:
+        while not self._stop.is_set():
             ready_msg = {"status": STATUS_READY_FOR_TASK}
             self._send_json_line(ready_msg)
+            if self._stop.is_set():
+                break
 
             task_line = None
             while True:
@@ -519,18 +535,24 @@ class MapReduceWorker:
             log("INFO", f"Received task type={task_type}")
             
             if task_type == TASK_MAP:
+                # Ping right before the long GIL-bound compute so the master's
+                # lease clock restarts from task start.
+                self._send_json_line({"status": STATUS_HEARTBEAT})
                 self._execute_map(task)
-                notification = {"status": STATUS_TASK_FINISHED}
-                self._send_json_line(notification)
+                self._send_json_line({"status": STATUS_TASK_FINISHED})
+                if self._stop.is_set():
+                    break
                 ack = self.socket.recv(1024)
                 if not ack:
                     log("WARN", "Master closed connection before ACK after MAP")
                     break
                 
             elif task_type == TASK_REDUCE:
+                self._send_json_line({"status": STATUS_HEARTBEAT})
                 self._execute_reduce(task)
-                notification = {"status": STATUS_TASK_FINISHED}
-                self._send_json_line(notification)
+                self._send_json_line({"status": STATUS_TASK_FINISHED})
+                if self._stop.is_set():
+                    break
                 ack = self.socket.recv(1024)
                 if not ack:
                     log("WARN", "Master closed connection before ACK after REDUCE")
@@ -575,7 +597,7 @@ if __name__ == "__main__":
                              "memory at MAP time — no NFS file and no on-disk staging (day4 §2).")
     parser.add_argument("--spill-dir", default="/tmp", metavar="DIR",
                         help="Base directory for transient on-disk staging (NFS-absent download "
-                             "fallback). Point at a large scratch partition (see scripts/find_scratch.sh) "
+                             "fallback). Point at a large scratch partition (see src/benchmarks/find_scratch.sh) "
                              "instead of the default /tmp.")
     parser.add_argument("--help", action="help", help="Show this help message and exit")
     args = parser.parse_args()
@@ -594,4 +616,7 @@ if __name__ == "__main__":
         direct_read=args.direct_read,
         spill_dir=args.spill_dir,
     )
-    worker.run()
+    try:
+        worker.run()
+    except (BrokenPipeError, ConnectionResetError, OSError) as e:
+        log("WARN", f"Worker stopped: lost connection to master ({e.__class__.__name__}).")

@@ -12,7 +12,7 @@
 # differ. For the fully-automated PASS/FAIL suite, use tests/run_all.py instead.
 #
 # Usage:
-#   scripts/local_cluster.sh -i <input_dir> [-j job] [-n workers]
+#   src/benchmarks/local_cluster.sh -i <input_dir> [-j job] [-n workers]
 #                            [-r reducers] [-o output_dir] [--validate]
 #
 #   -i  DIR   directory containing commoncrawl-*.txt splits          (required)
@@ -55,10 +55,10 @@ if [[ ! -d "$INPUT_DIR" ]]; then
   exit 2
 fi
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MASTER="$ROOT/src/map_reduce/master.py"
-WORKER="$ROOT/src/map_reduce/worker.py"
-VALIDATE="$ROOT/src/map_reduce/validate.py"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+MASTER="$ROOT/src/mapreduce/master.py"
+WORKER="$ROOT/src/mapreduce/worker.py"
+VALIDATE="$ROOT/src/mapreduce/validate.py"
 PY="${PYTHON:-python3}"
 MAP_BASE="/tmp/mr-local-$USER/map"
 

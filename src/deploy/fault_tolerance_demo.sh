@@ -20,13 +20,13 @@
 #   -d secs   : Wait this many seconds before killing (default: 0)
 #
 # Usage:
-#   bash scripts/fault_tolerance_demo.sh                 # kill 1 worker now
-#   bash scripts/fault_tolerance_demo.sh -n 2 -d 5       # wait 5s, kill 2
+#   bash src/deploy/fault_tolerance_demo.sh                 # kill 1 worker now
+#   bash src/deploy/fault_tolerance_demo.sh -n 2 -d 5       # wait 5s, kill 2
 # ==============================================================================
 
 NC="\e[0m"; GREEN="\e[32m"; YELLOW="\e[33m"; RED="\e[31m"
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 N_KILL="1"
 PORT=""
@@ -80,7 +80,9 @@ killed=0
 for host in "${WORKERS[@]}"; do
     [[ "$killed" -ge "$N_KILL" ]] && break
     host="${host%%$'\r'}"
-    if timeout 10 ssh -n $SSH_OPTS "$host" "pkill -9 -f '${PATTERN}'" >/dev/null 2>&1; then
+    # -u \$(id -u): only OUR worker.py is killed, never another user's process on
+    # this shared machine. -9 stays: an abrupt SIGKILL realistically simulates a crash.
+    if timeout 10 ssh -n $SSH_OPTS "$host" "pkill -9 -u \$(id -u) -f '${PATTERN}'" >/dev/null 2>&1; then
         echo -e "${RED}💀 Killed worker on ${host}${NC}"
     else
         echo -e "${YELLOW}No worker.py to kill on ${host} (already gone?)${NC}"

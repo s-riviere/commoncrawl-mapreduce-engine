@@ -25,8 +25,8 @@
 #   -s, --splits      : Only validate splits [0, N) (default: all present).
 #
 # Usage:
-#   python3 src/map_reduce/validate.py -i ~/slr207.../input -o ~/slr207.../output
-#   python3 src/map_reduce/validate.py -i input -o output -j lang -n 5
+#   python3 src/mapreduce/validate.py -i ~/slr207.../input -o ~/slr207.../output
+#   python3 src/mapreduce/validate.py -i input -o output -j lang -n 5
 # ==============================================================================
 
 import argparse

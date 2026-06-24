@@ -1,22 +1,60 @@
-# Deploy a distributed job
-bash scripts/deploy_commoncrawl.sh -w 8 -r 8 -s 20 -j bigram
+# =============================================================================
+#  SLR207 — DEMO LIVE (<= 3 min, copier-coller) — Groupe 1
+#  Tout se lance DEPUIS LA RACINE DU DEPOT, sur ta machine (jamais sur la
+#  passerelle ssh.enst.fr). Le master = 1ere machine, workers = les suivantes.
+#  Les 16 splits Common Crawl sont DEJA sur le NFS  =>  AUCUN telechargement.
+#  Prerequis : ~/.ssh/config avec ProxyJump (deja configure) ; runtime/machines.verified.txt.
+# =============================================================================
 
-# Demo fault tolerance (2nd terminal, mid-job)
-bash scripts/fault_tolerance_demo.sh -n 1
-
-# Validate correctness
-python3 src/map_reduce/validate.py -i <input> -o <output> -j bigram
-
-# Kafka comparison
-bash scripts/kafka/deploy_kafka.sh && bash scripts/kafka/run_wordcount.sh <file>
-
-# Clean up
-bash scripts/kill_commoncrawl.sh -d
+# (0) Se placer a la racine du depot (adapter le chemin si besoin).
+cd ~/Distributed-Computing-Project
 
 
+# --- TERMINAL A : deploiement + execution distribuee (8 workers, 8 splits) ---
+# Lit la liste de machines deja verifiees, demarre le master + 8 workers, puis
+# STREAME le log du master (MAP -> REDUCE) jusqu'a la fin (~45-60 s).
+# >>> NOTER le master affiche : "Master etabli sur tp-XXXX:54321".
+bash src/benchmarks/demo_verified_run.sh -w 8 -r 8 -s 8 -j wordcount
 
-# One Person Test
-. .venv/bin/activate          # matplotlib/numpy/scipy déjà installés
-python3 tests/run_all.py      # suite complète, 9/9
-# démo manuelle :
-bash scripts/local_cluster.sh -i <dossier_splits> -n 4 --validate
+
+# --- TERMINAL B : TOLERANCE AUX PANNES (pendant que A tourne, phase MAP) ------
+# Tue 1 worker en plein vol (UNIQUEMENT nos process, jamais ceux des autres).
+# Dans le terminal A on voit alors : "Worker disconnected" -> MAP reassigne
+# -> "job finished". Le job se termine quand meme, resultat correct.
+bash src/deploy/fault_tolerance_demo.sh -n 1
+
+
+# --- TERMINAL A : montrer le resultat (top mots par reducer, instantane) ------
+# Remplacer tp-XXXX par le master note plus haut. Chaque part-*.txt est deja
+# trie par frequence decroissante => head montre les mots les plus frequents.
+ssh tp-XXXX "head -n 3 ~/slr207-group1-commoncrawl-$USER/output/part-*.txt"
+
+
+# --- NETTOYAGE (garde les splits sur le NFS pour pouvoir rejouer la demo) ------
+bash src/deploy/kill_commoncrawl.sh
+
+
+# =============================================================================
+#  PREUVE DE CORRECTION (hors chrono : recalcul mono-machine ~4 min, optionnel)
+#  -s DOIT valoir le meme nombre de splits que le run ci-dessus (ici 8).
+# =============================================================================
+# scp src/mapreduce/validate.py tp-XXXX:~/slr207-group1-commoncrawl-$USER/
+# ssh tp-XXXX "python3 ~/slr207-group1-commoncrawl-$USER/validate.py \
+#     -i ~/slr207-group1-commoncrawl-$USER/input \
+#     -o ~/slr207-group1-commoncrawl-$USER/output -j wordcount -s 8"
+#   => se termine par "PASS — distributed output matches the single-machine reference exactly".
+
+
+# =============================================================================
+#  PLAN B — SI LE CLUSTER EST INDISPONIBLE (tout en local, 1 machine)
+# =============================================================================
+# . .venv/bin/activate           # numpy/matplotlib deja installes
+# python3 tests/run_all.py        # pipeline complet (4 analyses + FT + Amdahl) : 9/9
+
+
+# =============================================================================
+#  COMPILER LES SLIDES depuis le code (slides/presentation.md = deck Marp)
+# =============================================================================
+# En ligne   : ouvrir https://marp.app  et coller slides/presentation.md
+# VS Code    : extension "Marp for VS Code" -> Export (PDF / PPTX / HTML)
+# En CLI     : npx @marp-team/marp-cli slides/presentation.md --pdf --allow-local-files

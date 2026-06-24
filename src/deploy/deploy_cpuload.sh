@@ -29,8 +29,8 @@ RED="\e[31m"
 # Failure behavior
 set -uo pipefail
 
-# Set the current directory to the root of the project
-cd "$(dirname "$0")/.."
+# Set the current directory to the root of the project (script lives in src/deploy/)
+cd "$(dirname "$0")/../.."
 
 
 # ==============================================================================
@@ -44,7 +44,7 @@ N_WORKERS=50
 # CONTENT
 # ==============================================================================
 MACHINES_FILE="runtime/machines.txt"
-FILES_TO_UPLOAD=("src/cpu_load/server.py")
+FILES_TO_UPLOAD=("src/server/server.py")
 
 DIR_NAME="slr207-group1-cpuload-${USER}"
 NFS_DIR="~/${DIR_NAME}"
@@ -88,7 +88,7 @@ echo -e "================================================="
 echo -e ""
 
 mkdir -p "$(dirname "$MACHINES_FILE")"
-bash scripts/get_machines.sh -n "${N_WORKERS}" > "$MACHINES_FILE" || exit 1
+bash src/deploy/get_machines.sh -n "${N_WORKERS}" > "$MACHINES_FILE" || exit 1
 
 echo -e ""
 

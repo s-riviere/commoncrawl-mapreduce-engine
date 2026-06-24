@@ -26,8 +26,8 @@
 #   TOP_N      (default 20)   CONSUME_MS (default 15000)
 #
 # Usage:
-#   bash scripts/kafka/run_wordcount.sh
-#   bash scripts/kafka/run_wordcount.sh ~/slr207-group1-commoncrawl-$USER/input/commoncrawl-0000.txt
+#   bash src/kafka/run_wordcount.sh
+#   bash src/kafka/run_wordcount.sh ~/slr207-group1-commoncrawl-$USER/input/commoncrawl-0000.txt
 # ==============================================================================
 
 set -uo pipefail
@@ -154,4 +154,4 @@ echo "$RAW_OUT" | awk -F'\t' 'NF==2 {last[$1]=$2} END {for (k in last) print las
 # Stop the streams app (the broker keeps running for further demos).
 kill "$STREAMS_PID" >/dev/null 2>&1 || true
 echo -e ""
-echo -e "${GREEN}Done.${NC} Broker still running. Tear down with scripts/kafka/clean_kafka.sh."
+echo -e "${GREEN}Done.${NC} Broker still running. Tear down with src/kafka/clean_kafka.sh."

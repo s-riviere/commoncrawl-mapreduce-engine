@@ -26,9 +26,9 @@
 #   KAFKA_BASE (default /tmp/<user>-kafka)   KAFKA_PORT (default 9092)
 #
 # Usage:
-#   bash scripts/kafka/commoncrawl_source.sh                 # split 0 of default crawl
-#   bash scripts/kafka/commoncrawl_source.sh -c CC-MAIN-2024-10 -i 3
-#   bash scripts/kafka/commoncrawl_source.sh -u https://data.commoncrawl.org/crawl-data/.../xxx.wet.gz
+#   bash src/kafka/commoncrawl_source.sh                 # split 0 of default crawl
+#   bash src/kafka/commoncrawl_source.sh -c CC-MAIN-2024-10 -i 3
+#   bash src/kafka/commoncrawl_source.sh -u https://data.commoncrawl.org/crawl-data/.../xxx.wet.gz
 # ==============================================================================
 
 set -uo pipefail

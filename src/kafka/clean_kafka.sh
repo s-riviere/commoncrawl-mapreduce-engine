@@ -17,8 +17,8 @@
 #   -a : Also delete the extracted Kafka binaries and the downloaded .tgz
 #
 # Usage:
-#   bash scripts/kafka/clean_kafka.sh
-#   bash scripts/kafka/clean_kafka.sh -a
+#   bash src/kafka/clean_kafka.sh
+#   bash src/kafka/clean_kafka.sh -a
 # ==============================================================================
 
 set -uo pipefail
@@ -47,7 +47,7 @@ if [[ -f "${KAFKA_BASE}/streams.pid" ]]; then
     kill "$(cat "${KAFKA_BASE}/streams.pid")" >/dev/null 2>&1 || true
     rm -f "${KAFKA_BASE}/streams.pid"
 fi
-pkill -f "streams.examples.wordcount.WordCountDemo" >/dev/null 2>&1 || true
+pkill -u "$(id -u)" -f "streams.examples.wordcount.WordCountDemo" >/dev/null 2>&1 || true
 echo -e "${GREEN}[OK]${NC} Streams app stopped."
 
 # 2. Stop the broker.
@@ -58,7 +58,7 @@ if [[ -f "${KAFKA_BASE}/broker.pid" ]]; then
     kill "$(cat "${KAFKA_BASE}/broker.pid")" >/dev/null 2>&1 || true
     rm -f "${KAFKA_BASE}/broker.pid"
 fi
-pkill -f "kafka.Kafka" >/dev/null 2>&1 || true
+pkill -u "$(id -u)" -f "kafka.Kafka" >/dev/null 2>&1 || true
 sleep 1
 echo -e "${GREEN}[OK]${NC} Broker stopped."
 

@@ -9,8 +9,8 @@
 # one as a scratch/spill directory for the worker's --spill-dir / -l flags.
 #
 # Usage:
-#   bash scripts/find_scratch.sh                 # inspect THIS machine
-#   ssh <host> 'bash -s' < scripts/find_scratch.sh   # inspect a cluster node
+#   bash src/benchmarks/find_scratch.sh                 # inspect THIS machine
+#   ssh <host> 'bash -s' < src/benchmarks/find_scratch.sh   # inspect a cluster node
 # ==============================================================================
 set -euo pipefail
 
@@ -64,5 +64,5 @@ echo "  Suggested scratch directory  : ${scratch}"
 echo
 echo "  Use it with the worker, e.g.:"
 echo "    mkdir -p '${scratch}'"
-echo "    python3 src/map_reduce/worker.py ... \\"
+echo "    python3 src/mapreduce/worker.py ... \\"
 echo "        --spill-dir '${scratch}' -l '${scratch}/map-outputs'"

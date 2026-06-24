@@ -42,7 +42,7 @@ loop every HEARTBEAT_INTERVAL ≈ 2s  (each worker, async)
 N0->Main: HEARTBEAT(worker_id, state, task_id, attempt, progress%)
 Main-->N0: ACK(epoch)
 end
-note over Main: Failure detector (lease):\nif now − last_seen[w] > LEASE_TIMEOUT ≈ 10s\n  ⇒ mark w DEAD, reclaim its tasks (see below)
+note over Main: Failure detector (lease):\nif now − last_seen[w] > LEASE_TIMEOUT = 60s\n  ⇒ mark w DEAD, reclaim its tasks (see below)\n(60s > one ~30s GIL-bound MAP, so a busy healthy worker is never wrongly killed;\n a real crash closes the TCP socket and is detected instantly regardless)
 
 note over Main,N2: ══ Phase 1 — MAP (with re-execution on failure) ══
 

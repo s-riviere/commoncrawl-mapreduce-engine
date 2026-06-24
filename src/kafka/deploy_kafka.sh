@@ -23,8 +23,8 @@
 #   KAFKA_PORT    (default 9092)    KAFKA_MIRROR  (download URL)
 #
 # Usage:
-#   bash scripts/kafka/deploy_kafka.sh
-#   KAFKA_PORT=9095 bash scripts/kafka/deploy_kafka.sh
+#   bash src/kafka/deploy_kafka.sh
+#   KAFKA_PORT=9095 bash src/kafka/deploy_kafka.sh
 # ==============================================================================
 
 set -uo pipefail
@@ -110,7 +110,7 @@ for i in $(seq 1 30); do
     if "${KAFKA_HOME}/bin/kafka-topics.sh" --bootstrap-server "localhost:${KAFKA_PORT}" --list >/dev/null 2>&1; then
         echo -e "${GREEN}[READY]${NC} Broker is up on localhost:${KAFKA_PORT}."
         echo -e ""
-        echo -e "Next: bash scripts/kafka/run_wordcount.sh <input.txt>"
+        echo -e "Next: bash src/kafka/run_wordcount.sh <input.txt>"
         exit 0
     fi
     sleep 1

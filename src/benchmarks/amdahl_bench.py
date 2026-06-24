@@ -73,7 +73,7 @@ def start_workers(machines, port, input_dir, output_dir, local_map_dir, master_h
     for host in machines:
         cmd = (
             f"ssh {SSH_OPTS} {host} "
-            f"'cd ~/proj && nohup python3 src/map_reduce/worker.py "
+            f"'cd ~/proj && nohup python3 src/mapreduce/worker.py "
             f"-h {master_host} -p {port} "
             f"-i {input_dir} -o {output_dir} -l {local_map_dir} "
             f"{max_ssh_arg} "
@@ -120,7 +120,7 @@ def run_master(port, n_splits, n_reducers, crawl_id=None, timeout=3600):
     """
     cmd = [
         sys.executable, "-u",
-        "src/map_reduce/master.py",
+        "src/mapreduce/master.py",
         "-p", str(port),
         "-s", str(n_splits),
         "-r", str(n_reducers),

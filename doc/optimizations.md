@@ -8,7 +8,7 @@ All measurements aggregated across workers (summed t_compute, t_shuffle etc.).
 ## Baseline — Python worker (unoptimized)
 
 **Branch:** `main`  
-**File:** `src/map_reduce/worker.py`
+**File:** `src/mapreduce/worker.py`
 
 ### MAP phase (per run, summed across workers)
 - Tokenization: `line.split()` + `word.isalnum()` check per word

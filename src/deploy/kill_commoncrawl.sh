@@ -20,9 +20,9 @@
 #   -k crawl  : (unused placeholder, reserved)
 #
 # Usage:
-#   bash scripts/kill_commoncrawl.sh
-#   bash scripts/kill_commoncrawl.sh -p 54321
-#   bash scripts/kill_commoncrawl.sh -d           # full wipe incl. NFS data
+#   bash src/deploy/kill_commoncrawl.sh
+#   bash src/deploy/kill_commoncrawl.sh -p 54321
+#   bash src/deploy/kill_commoncrawl.sh -d           # full wipe incl. NFS data
 # ==============================================================================
 
 
@@ -35,7 +35,7 @@ YELLOW="\e[33m"
 RED="\e[31m"
 
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 
 # ==============================================================================
@@ -105,8 +105,14 @@ echo -e ""
 clean_host() {
     local host="$1"
 
-    # Kill processes, remove /tmp intermediates and stale ssh control sockets.
-    local remote_cmd="pkill -f '${KILL_PATTERN}' 2>/dev/null
+    # Kill ONLY OUR processes (pkill -u \$(id -u)) so we never touch another
+    # student's master.py/worker.py on a shared lab machine. SIGTERM first for a
+    # graceful exit, then SIGKILL for anything still alive. Then remove the local
+    # /tmp intermediates and stale ssh control sockets.
+    local remote_cmd="uid=\$(id -u)
+        pkill -u \$uid -f '${KILL_PATTERN}' 2>/dev/null
+        sleep 0.5
+        pkill -9 -u \$uid -f '${KILL_PATTERN}' 2>/dev/null
         rm -rf ${TMP_DIR} 2>/dev/null
         rm -f /tmp/ssh-ctrl-* /tmp/commoncrawl-*.txt /tmp/worker_*.log 2>/dev/null"
 

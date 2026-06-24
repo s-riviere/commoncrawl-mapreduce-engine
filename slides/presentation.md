@@ -5,141 +5,232 @@ paginate: true
 ---
 
 # Distributed MapReduce on Common Crawl
-### SLR207 — Télécom Paris
+### SLR207 — Télécom Paris · Group 1
 
-A from-scratch MapReduce engine (Python) on the lab cluster
-+ fault tolerance, performance, 4 analyses, Kafka Streams comparison
+A from-scratch **MapReduce engine** running on the school cluster — no Hadoop,
+no HDFS, no YARN, no root rights.
 
-*(10 min talk + 10 min questions)*
-
----
-
-## Agenda
-
-1. Architecture & storage model
-2. Protocol (V1 KISS → V2 fault-tolerant)
-3. Performance metrics & Amdahl's law
-4. Pain points — what broke & why
-5. Three use cases beyond word count
-6. Batch vs stream: us vs Hadoop vs Kafka Streams
-7. Live demo
+Built around one question: *how do you process gigabytes of web text across
+dozens of shared machines, correctly and fast, when one of them can die at any
+moment?*
 
 ---
 
-## 1. Architecture
+## What we built (in one slide)
 
-- **Main / Workers** over SSH (no HDFS, no YARN, no root).
-- **Main** = task queues + `MAP→REDUCE` barrier + failure detector. Routes *metadata only*.
-- **Workers** = MAP to **local `/tmp`**, REDUCE pulls partitions worker↔worker via `ssh cat` (the "remote read").
-- Storage rule: **intermediates on local disk**, final output on NFS, **never** read hundreds of files from NFS.
+- A **Main + Workers** distributed engine deployed over **SSH** on `tp-*.enst.fr`.
+- Runs **word frequency** + **3 other analyses** on **Common Crawl** web data.
+- **Fault tolerant**: kill a worker mid-job, the job still finishes with the *exact* right answer.
+- **Measured** performance and a real **Amdahl's law** curve (1 → 16 nodes).
+- A **Kafka Streams** counterpart, to compare *batch* vs *stream*.
 
----
-
-## Common Crawl ingestion
-
-- WET (plain-text) files from `data.commoncrawl.org`; file list = `wet.paths.gz`.
-- Two paths:
-  - pre-download to NFS (`download_commoncrawl.py --missing-only`),
-  - **direct from Amazon** (`master --crawl <ID>` → workers stream+gunzip to `/tmp`).
-- Direct read = **NFS untouched** → solves the "poor little NFS server" problem.
-- Why care? Common Crawl is a primary data source for training LLMs.
+> Everything reproducible from the repo; a one-laptop fallback exists for the demo.
 
 ---
 
-## 2. Protocol — V1 (KISS)
+## Agenda — the questions we kept asking
 
-- TCP, newline-delimited **JSON**, one connection per worker.
-- `READY → {MAP|REDUCE|WAIT} → TASK_FINISHED → ACK`.
-- Reducer for key `k`: `crc32(k) % n_reducers`.
-- Barrier: all MAP done → REDUCE.
-- Diagram: `doc/map_reduce/MapReduce.svg` (sequencediagram.org).
-
----
-
-## 2. Protocol — V2 (fault tolerance)
-
-- **Heartbeat (2 s) + lease (10 s)** failure detector.
-- Re-execution (paper §3.1):
-  - dead in-progress task → re-queue,
-  - dead **completed MAP** → **re-run** (its `/tmp` is gone),
-  - completed REDUCE → **kept** (atomic on NFS).
-- **Atomic output**: `.tmp` + `os.replace()` → exactly-once.
-- **Straggler backup tasks** (§3.6): duplicate the slowest in-flight map, first wins.
+1. Team & method
+2. Discovery & deployment (SSH, ports, cleanup)
+3. **NFS vs local disk** — the critical decision
+4. Architecture & protocol (Main / Workers)
+5. MapReduce core & correctness
+6. The data: Common Crawl
+7. Performance & Amdahl's law
+8. Fault tolerance
+9. Batch vs stream: us vs Hadoop vs Kafka
+10. Use cases & pain points
 
 ---
 
-## 3. Performance — what we time
+## 1. Team & method
 
-- Master: `t_total, t_map, t_reduce`.
-- Worker: `t_download, t_clean, t_io_read, t_compute, t_shuffle, t_io_write`.
-- **Measured bottleneck:** MAP `t_compute` > 85 % of worker time.
-- Optimisations: bytes-regex + combine + vectorised CRC32 (**compute 1.52×**, shuffle 4–5× smaller) + **parallel SSH shuffle** (`ControlMaster`).
-
----
-
-## 4. Amdahl's law (same dataset at every point)
-
-Reproducible single-machine sweep (`tests/run_all.py`, 8 splits):
-
-| N | t_total | Speedup |
-|---|---------|---------|
-| 1 | 1.65 s | 1.00× |
-| 2 | 1.02 s | 1.61× |
-| 4 | 0.84 s | **1.96×** |
-
-- Serial fraction **f ≈ 0.34** on one box → ceiling **≈ 3×** (shared mem bandwidth).
-- Cluster sweep (`amdahl_bench.py`, N→32 independent nodes): ceiling rises **~4–5×**.
-- ≥2 workers ⇒ **measure**, never extrapolate. Figure: `runtime/amdahl_speedup.png`.
+- Work split by **responsibility**: deployment, protocol, map/reduce core,
+  metrics/Amdahl, fault tolerance, Kafka — each owned, but cross-reviewed.
+- **Protocol formalized first** on *sequencediagram.org* — we did **not** code blindly.
+- Shared **Git repository** + shared notes for findings and progress.
+- **Everyone** can deploy, run, validate and clean the system — not a single person.
+- Kafka Streams started early, not left to the last minute.
 
 ---
 
-## 5. Pain points
+## 2. Discovery & deployment
 
-- NFS overload → local `/tmp` + direct Amazon read.
-- SSH fan-in / `fail2ban` → `ControlMaster` multiplexing + `max_ssh≈8`.
-- **One dead worker froze the whole job (V1)** → V2 heartbeats + re-exec.
-- Partial reduce file on crash → atomic commit.
-- "Why only a few ×?" → Amdahl, the hard way.
-
----
-
-## 6. Three use cases (same engine, `-j`)
-
-- **`lang`** — language popularity/ranking (stop-word hits). English dominates.
-- **`wordlen`** — word-length distribution (size). Unimodal, peak ~2–4 chars.
-- **`bigram`** — phrase popularity. Function-word pairs top the list.
-- All validated against a **single-machine reference** (`validate.py`).
+- Machines from the **`tp.telecom-paris.fr` API** (the `ajax.php` JSON the browser fetches).
+- We use **canonical names** (`tp-1a201-05.enst.fr`) and test **liveness** by SSH (timeout) — a powered-off machine is skipped, never blocks us.
+- **One SCP to the NFS HOME, then N SSH** to launch servers — *not* N SCP.
+  The home is shared over NFS, so a single copy is visible everywhere → far less traffic.
+- **Port selection** is configurable; if taken, we pick another. Dual-stack listener.
+- **SSH keys + fingerprint bypass** → no password, no interactive "yes".
+- A **cleanup script** kills *only our* processes (UID-scoped) on every node → clean redeploy.
 
 ---
 
-## 7. Batch vs Stream
+## 3. NFS vs local disk — the critical point
 
-| | Us | Hadoop | Kafka Streams |
+- Our **HOME is on the NFS**, not the local disk. Writing there hammers a shared server.
+- The paper (Fig. 1) writes **map intermediates to the LOCAL disk** — so do we: **`/tmp`** on each worker.
+- We **explore** each machine (`df`, `mount`) for the largest local scratch partition.
+- Why it matters:
+  - **Performance** — local I/O instead of network I/O.
+  - **Politeness** — hundreds of concurrent reads would crush *"the poor little NFS server"*.
+- Only the **final output** lands back on the NFS, written **atomically**.
+
+---
+
+## 4. Architecture
+
+- **Main (coordinator)**: holds the MAP/REDUCE task queues, the **phase barrier**, and the **failure detector**. It routes **metadata only** — never the data itself.
+- **Workers**: do the MAP locally, then **pull** each other's partitions for REDUCE.
+- The **shuffle is the "remote read"**: worker ↔ worker, directly, Main uninvolved.
+
+![w:560](../doc/map_reduce/MapReduce.svg)
+
+> Full protocol incl. fault tolerance: `doc/fault_tolerance/fault_tolerance.seqdiag.txt` (sequencediagram.org).
+
+---
+
+## 4. Protocol (V1, KISS first)
+
+- Transport: **TCP**, newline-delimited **JSON**, one connection per worker.
+- Conversation: `READY → {MAP | REDUCE | WAIT} → TASK_FINISHED → ACK`.
+- **Phase sync**: the Main starts REDUCE only when **all** MAP tasks are DONE (barrier).
+- **Bootstrap** (chicken-and-egg): Main listens first; workers connect, register, and *ask* for work — no fixed worker list baked in.
+- **Key routing**: reducer for key `k` = `crc32(k) % R` → every occurrence of a key lands on the **same** reducer.
+
+---
+
+## 5. MapReduce core — word frequency
+
+- **MAP**: read a split → tokenise → emit `(word → 1)`, pre-combined locally per split.
+- **Partition**: `crc32(word) % R` buckets, written to local `/tmp`.
+- **REDUCE**: fetch all buckets for its partition, **sum per key**, sort, write `part-j`.
+- The hash guarantees **disjoint keys** per reducer → no global re-summing at the end.
+
+### Are the results correct?
+
+- **Sanity check**: pairs-in vs pairs-out.
+- **Ground truth**: a **single-machine** recomputation on the *same* splits — same distinct keys, same totals, **key-by-key** equality.
+
+---
+
+## 6. The data: Common Crawl
+
+- Real web crawl in **WET** (extracted plain-text) format; file list via `wet.paths.gz`.
+- We grew the scale deliberately: **toy split (PoC) → real splits → 16 splits (~1.5 GB)**.
+- Two ingestion paths:
+  - pre-download splits to the NFS, **or**
+  - **stream directly from Amazon S3/HTTPS** to each worker's `/tmp` — **NFS untouched**.
+- Why Common Crawl? It's one of the **primary data sources for training today's LLMs**.
+
+---
+
+## 7. Performance — measure, don't guess
+
+- We time **every phase**: deploy, clean, file read/write, sync/wait, network, compute.
+- **Bottleneck (measured, not assumed):** the MAP **compute** dominates worker time.
+- Optimisations that moved the needle:
+  - bytes-level tokeniser + **local combine** → smaller shuffle,
+  - **vectorised CRC32** partitioning,
+  - **parallel SSH shuffle** with connection multiplexing.
+
+---
+
+## 7. Amdahl's law (real cluster)
+
+Same 16-split dataset at **every** point — one run per node count:
+
+| N nodes | t_total | Speedup |
+|---------|---------|---------|
+| 1 | 521.7 s | 1.00× (reference) |
+| 2 | 262.8 s | 1.99× |
+| 4 | 137.2 s | 3.80× |
+| 8 | 84.6 s | 6.17× |
+| 16 | 67.4 s | **7.74×** |
+
+- Incompressible **serial fraction f ≈ 0.065** → theoretical ceiling **≈ 15.4×**.
+- Linear to N=4, then shuffle / SSH fan-in bends the curve.
+- With ≥2 nodes you **must measure** — extrapolation from one machine is invalid.
+
+---
+
+## 8. Fault tolerance — the core challenge
+
+- **Detection**: heartbeats (2 s) + **lease (60 s)**, *and* instant TCP-close detection.
+- **Re-execution** (paper §3.1):
+  - a **completed MAP** on a dead node is **re-run** — its `/tmp` output is gone,
+  - a **completed REDUCE** is **kept** — it was committed atomically on the NFS,
+  - any in-progress task is re-queued.
+- **Stragglers**: backup tasks duplicate the slowest map; first to finish wins.
+- **Atomic writes**: `.tmp` then rename → no partial/duplicate output (exactly-once).
+- **Main failure**: periodic checkpoint → resume from the last barrier.
+
+---
+
+## 8. Fault tolerance — demonstrated
+
+We killed a worker **mid-MAP** during a 16-split job:
+
+- Main logged **`Worker disconnected`** → its lost MAP was **reassigned**,
+- all 16 maps completed, REDUCE ran on the 7 survivors → **`job finished`**,
+- re-validated against the single-machine reference: **PASS, exactly correct**
+  (`distinct = 9 465 561`, `total = 571 949 216`).
+
+> Fault tolerance isn't just "it finishes" — it finishes with the **right answer**.
+
+---
+
+## 9. Batch vs stream — us vs Hadoop vs Kafka
+
+| | Our system | Hadoop | Kafka Streams |
 |---|---|---|---|
 | Model | Batch | Batch | **Stream** |
-| Storage | NFS+/tmp | **HDFS** | Kafka log |
-| Output | final once | final once | **changelog (live)** |
-| Setup | easy | hard | medium (no root/Docker) |
+| Storage | NFS + local `/tmp` | **HDFS** | Kafka log |
+| Output | final, once | final, once | **changelog (live, never "done")** |
+| Setup | light (SSH) | heavy | medium (no root / no Docker) |
 
-- We lack: HDFS, YARN, speculative exec, secure RPC.
-- Kafka WordCount = same final counts, but **never "done"**.
-- **Common Crawl → Kafka source connector** (`commoncrawl_source.sh`): streams S3/HTTPS straight into the topic — no NFS, no file.
+- We deliberately **don't** have: HDFS, YARN, speculative exec, secure RPC.
+- Kafka WordCount gives the **same counts**, but keeps updating continuously.
+- Idea: a **Common Crawl → Kafka source connector** reads S3 straight into a topic — no NFS, no files.
 
 ---
 
-## Live demo
+## 10. Three use cases (same engine)
 
-1. `deploy_commoncrawl.sh -w 8 -r 8 -s 20` → watch MAP→REDUCE.
-2. In a 2nd terminal: `fault_tolerance_demo.sh -n 1` → master recovers.
-3. `validate.py` → output still correct ✅.
-4. `kafka/deploy_kafka.sh` + `run_wordcount.sh --crawl CC-MAIN-2024-10` (direct S3 source).
+Same shuffle/reduce — only the MAP keying changes:
 
-**No cluster? Run it solo:** `python3 tests/run_all.py` reproduces the whole
-pipeline (4 analyses + fault tolerance + Amdahl figure) on one laptop, 9/9 checks.
-Or drive it by hand: `scripts/local_cluster.sh -i <splits> -n 4 --validate`.
+- **Languages** — dominant languages via stop-word hits → English leads.
+- **Word length** — distribution of word sizes → unimodal, peak ~2–4 chars.
+- **Bigrams** — phrase popularity → function-word pairs dominate.
+
+Each result is **interpretable** and **validated** against a single-machine reference.
+
+---
+
+## 10. Pain points — what broke & why
+
+- **NFS overload** under concurrent reads → moved intermediates to local `/tmp` + direct S3 read.
+- **SSH fan-in / fail2ban** when launching many nodes → connection multiplexing + bounded parallelism.
+- **One dead worker froze the whole V1 job** → V2 heartbeats + re-execution.
+- **Partial output on crash** → atomic commit (temp + rename).
+- **"Why only a few ×?"** → Amdahl's law, learned the hard way by measuring.
+
+---
+
+## What we proved
+
+- A working **distributed MapReduce** on real Common Crawl data.
+- **Correctness** verified against a single-machine ground truth.
+- **Fault tolerance** demonstrated by killing a node mid-job — still exact.
+- A **real Amdahl curve** (7.74× on 16 nodes, ceiling ≈ 15.4×).
+- A **Kafka Streams** comparison framing batch vs stream.
+
+Repo: `README.md` (run from scratch) · `report/` · `doc/fault_tolerance/fault_tolerance.seqdiag.txt` · `self-assessment.md`
 
 ---
 
 ## Thank you — questions?
 
-Repo: `README.md` (run from scratch) · `report/` · `self-assessment.md`
+**Demo on request:** deploy a job, kill a worker live, show it recover and still
+produce the exact same counts as a single-machine reference.
+

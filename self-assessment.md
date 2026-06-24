@@ -6,10 +6,10 @@ Levels: **[Base]** minimum · **[Solid]** robust · **[Advanced]** goes further.
 > Pointers use this repo's paths so each tick is checkable.
 
 ## 1. Infrastructure and deployment
-- [x] **[Base]** 100 live machines generated automatically (`ajax.php` API, `.enst.fr`) — `scripts/get_machines.sh`
-- [x] **[Base]** Deployment = SCP to HOME (NFS) + SSH to start servers — `scripts/deploy_commoncrawl.sh`
+- [x] **[Base]** 100 live machines generated automatically (`ajax.php` API, `.enst.fr`) — `src/deploy/get_machines.sh`
+- [x] **[Base]** Deployment = SCP to HOME (NFS) + SSH to start servers — `src/deploy/deploy_commoncrawl.sh`
 - [x] **[Base]** Servers listen on a chosen port, no collision (configurable `-p`)
-- [x] **[Base]** Cleaning script; clean redeployment possible — `scripts/kill_commoncrawl.sh`, `scripts/kill_cpuload.sh`
+- [x] **[Base]** Cleaning script; clean redeployment possible — `src/deploy/kill_commoncrawl.sh`, `src/deploy/kill_cpuload.sh`
 - [x] **[Solid]** Deployment robust to unreachable machines (timeouts, non-blocking)
 - [x] **[Solid]** SSH keys + fingerprint bypass (`StrictHostKeyChecking=no`, `BatchMode=yes`)
 - [x] **[Solid]** Deploy and clean scripts idempotent and replayable (`--missing-only`, `rm -rf output`)
@@ -18,7 +18,7 @@ Levels: **[Base]** minimum · **[Solid]** robust · **[Advanced]** goes further.
 - [x] **[Base]** We know HOME is on NFS, not local disk
 - [x] **[Solid]** MAP intermediates written to **local `/tmp`**, not NFS — `worker.py` `local_map_dir`
 - [x] **[Solid]** NFS load deliberately limited (direct Amazon read via `--crawl`; controlled writes)
-- [x] **[Advanced]** Explored partitions beyond `/tmp` (scratch space via `df`/`mount`) — `scripts/find_scratch.sh` inspects mounts and recommends the largest local non-NFS partition; worker `--spill-dir` redirects staging there (tool run locally; cluster figures pending lab time)
+- [x] **[Advanced]** Explored partitions beyond `/tmp` (scratch space via `df`/`mount`) — `src/benchmarks/find_scratch.sh` inspects mounts and recommends the largest local non-NFS partition; worker `--spill-dir` redirects staging there (tool run locally; cluster figures pending lab time)
 
 ## 3. Protocol design
 - [x] **[Base]** Main/Workers roles clearly defined
@@ -31,8 +31,8 @@ Levels: **[Base]** minimum · **[Solid]** robust · **[Advanced]** goes further.
 - [x] **[Base]** Word frequency works on small splits (proof of concept)
 - [x] **[Base]** Key distribution at reduce via `crc32(key) % N`
 - [x] **[Solid]** Remote read of local intermediates for reduce (parallel `ssh cat`, `ControlMaster`)
-- [x] **[Solid]** Results validated against a single-machine reference — `src/map_reduce/validate.py`
-- [x] **[Solid]** Full pipeline reproducible by **one person, no cluster** — `tests/run_all.py` (4 analyses + fault tolerance + Amdahl, 9/9 checks); manual demo via `scripts/local_cluster.sh`
+- [x] **[Solid]** Results validated against a single-machine reference — `src/mapreduce/validate.py`
+- [x] **[Solid]** Full pipeline reproducible by **one person, no cluster** — `tests/run_all.py` (4 analyses + fault tolerance + Amdahl, 9/9 checks); manual demo via `src/benchmarks/local_cluster.sh`
 - [x] **[Advanced]** Works on real Common Crawl splits at scale (32 in the Amdahl sweep; design scales to 100/1000+ as MAP tasks ≫ workers) — *scale tested to tens; 1000+ left to lab time*
 
 ## 5. Common Crawl data
@@ -52,14 +52,14 @@ Levels: **[Base]** minimum · **[Solid]** robust · **[Advanced]** goes further.
 - [x] **[Base]** Detection of a dead worker (heartbeat 2 s + lease 10 s / TCP close)
 - [x] **[Solid]** Re-execution of lost tasks by the Main (in-progress + completed MAP)
 - [x] **[Solid]** Atomic output writes (`.tmp` + `os.replace()`)
-- [x] **[Advanced]** Demonstration by killing nodes mid-computation — `scripts/fault_tolerance_demo.sh` (cluster) / `tests/run_all.py` (solo)
+- [x] **[Advanced]** Demonstration by killing nodes mid-computation — `src/deploy/fault_tolerance_demo.sh` (cluster) / `tests/run_all.py` (solo)
 - [x] **[Advanced]** Straggler handling (backup tasks, paper §3.6)
 
 ## 8. Comparison and Kafka Streams (light)
 - [x] **[Base]** Can situate batch vs stream — `report/report.md` §7
-- [x] **[Solid]** Minimal wordcount with Kafka Streams (downloaded files, no Docker/root) — `scripts/kafka/*`
+- [x] **[Solid]** Minimal wordcount with Kafka Streams (downloaded files, no Docker/root) — `src/kafka/*`
 - [x] **[Solid]** Documented comparison vs Hadoop & Kafka Streams (incl. missing HDFS etc.)
-- [x] **[Advanced · optional]** Direct Common Crawl read via a **Kafka** source/connector — `scripts/kafka/commoncrawl_source.sh` streams a `.wet.gz` from `data.commoncrawl.org` (S3/HTTPS) straight into the input topic (no NFS, no file); wired into `run_wordcount.sh --crawl <ID> [--index N]`
+- [x] **[Advanced · optional]** Direct Common Crawl read via a **Kafka** source/connector — `src/kafka/commoncrawl_source.sh` streams a `.wet.gz` from `data.commoncrawl.org` (S3/HTTPS) straight into the input topic (no NFS, no file); wired into `run_wordcount.sh --crawl <ID> [--index N]`
 
 ## 9. Use cases, report and demo
 - [x] **[Base]** 3 use cases beyond wordcount — `lang`, `wordlen`, `bigram` (`-j` flag)
