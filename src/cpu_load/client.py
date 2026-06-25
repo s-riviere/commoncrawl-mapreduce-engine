@@ -6,7 +6,7 @@ cluster-wide averages (1, 5, 15 min).
 
 Usage:
   python3 client.py [port]               use local machines.txt
-  python3 client.py [port] --sync HOST   fetch machines.txt from HOST:/tmp/slr207-group1/
+  python3 client.py [port] --sync HOST   fetch machines.txt from HOST:/tmp/slr207-group1-cpuload/
 """
 import socket
 import subprocess
@@ -34,7 +34,7 @@ if '--sync' in args:
         sys.exit(1)
 
 LOCAL_MACHINES_FILE = str(Path(__file__).resolve().parent.parent.parent / "runtime" / "machines.txt")
-REMOTE_MACHINES_FILE = '/tmp/slr207-group1/machines.txt'
+REMOTE_MACHINES_FILE = '/tmp/slr207-group1-cpuload/machines.txt'
 TIMEOUT = 5   
 SCP_OPTS = [
     '-4',
