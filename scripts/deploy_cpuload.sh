@@ -4,7 +4,7 @@
 # DESCRIPTION
 # ==============================================================================
 # Robust parallel deployment for WSL2 over Campus Wi-Fi.
-# Uploads remote files (NFS) and machines.txt (/tmp) on one lab machine.
+# Uploads remote files (NFS) and machines.txt (/tmp/slr207-group1-cpuload) on one lab machine.
 # Then SSH-starts one server process per machine in machines.txt.
 #
 # Arguments:
@@ -61,7 +61,7 @@ SSH_OPTS="-4 \
 upload_to_host() {
     local host="$1"
     timeout 10 ssh -n $SSH_OPTS "$host" "mkdir -p ${TMP_DIR}; chmod 777 ${TMP_DIR}" && \
-    timeout 10 scp $SSH_OPTS "$MACHINES_FILE" "${host}:${TMP_DIR}/" && \
+    timeout 10 scp $SSH_OPTS "$MACHINES_FILE" "${host}:/tmp/slr207-group1-cpuload/" && \
     timeout 10 ssh -n $SSH_OPTS "$host" "mkdir -p ${NFS_DIR}" && \
     timeout 10 scp $SSH_OPTS "${FILES_TO_UPLOAD[@]}" "${host}:${NFS_DIR}/"
 }
@@ -158,6 +158,7 @@ echo -e ""
 # ── Final Report ──────────────────────────────────────────────────────────────
 echo -e "================================================="
 echo -e " Deployment complete."
+echo -e " python3 ../src/cpu_load/client.py --sync ${NFS_HOST} "
 echo -e "================================================="
 
 exit 0
