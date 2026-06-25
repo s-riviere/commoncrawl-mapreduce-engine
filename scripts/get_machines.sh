@@ -19,7 +19,7 @@
 
 
 # Use a whitelist, to avoid rooms having oral exams
-WHITELIST=("tp-3a107" "tp-XXXX")
+WHITELIST=("tp-3a107" "tp-1a226" "tp-3a209" "tp-4b01" "tp-XXXX")
 
 
 # ==============================================================================
