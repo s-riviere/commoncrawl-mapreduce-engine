@@ -18,6 +18,10 @@
 # ==============================================================================
 
 
+# Use a whitelist, to avoid rooms having oral exams
+WHITELIST=("tp-3a107" "tp-1a226" "tp-3a209" "tp-4b01" "tp-XXXX")
+
+
 # ==============================================================================
 # SH CONFIGURATION
 # ==============================================================================
@@ -80,9 +84,12 @@ if ! command -v jq &> /dev/null; then
 fi
 
 # 2. Extraction, filtrage et tri des données avec jq
-best_machines=$(echo -e "${raw_data}" | jq -r --argjson n "$N_MACHINES" '
+whitelist_json=$(printf '%s\n' "${WHITELIST[@]}" | jq -R . | jq -s .)
+# best_machines=$(echo -e "${raw_data}" | jq -r --argjson n "$N_MACHINES" '
+#   map(select(length >= 5 and .[1] == true)) |
+best_machines=$(echo -e "${raw_data}" | jq -r --argjson n "$N_MACHINES" --argjson whitelist "$whitelist_json" '
   .data | 
-  map(select(length >= 5 and .[1] == true)) |
+  map(select(length >= 5 and .[1] == true and (.[0] as $name | $whitelist | any(. as $prefix | $name | startswith($prefix))))) |
   map({
     name: .[0],
     score: ((.[2] | tonumber? // 999) + (.[3] | tonumber? // 999) + (.[4] | tonumber? // 999))
