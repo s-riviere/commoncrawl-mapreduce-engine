@@ -34,7 +34,7 @@ if '--sync' in args:
         sys.exit(1)
 
 LOCAL_MACHINES_FILE = str(Path(__file__).resolve().parent.parent.parent / "runtime" / "machines.txt")
-REMOTE_MACHINES_FILE = '/tmp/slr207-group1/machines.txt'
+REMOTE_MACHINES_FILE = '/tmp/slr207-group1-cpuload/machines.txt'
 TIMEOUT = 5   
 SCP_OPTS = [
     '-4',
