@@ -339,7 +339,7 @@ echo -e "================================================="
 echo -e ""
 echo -e "${YELLOW}Master         :${NC} ${master_host}:${MASTER_PORT}"
 echo -e "${YELLOW}Sortie (NFS)   :${NC} ${NFS_OUTPUT_DIR}"
-echo -e "${YELLOW}Valider        :${NC} voir TESTING.md section 5.3 (validate.py)"
+echo -e "${YELLOW}Valider        :${NC} voir README section 12 (validate.py)"
 echo -e "${YELLOW}Nettoyer       :${NC} bash src/deploy/kill_commoncrawl.sh        (garde les splits pour la démo)"
 echo -e "${YELLOW}Wipe complet   :${NC} bash src/deploy/kill_commoncrawl.sh -d     (supprime aussi le dossier NFS)"
 

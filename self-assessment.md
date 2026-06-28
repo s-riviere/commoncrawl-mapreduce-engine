@@ -25,7 +25,7 @@ Levels: **[Base]** minimum · **[Solid]** robust · **[Advanced]** goes further.
 - [x] **[Base]** V1 space-time diagram (KISS) — `doc/map_reduce/MapReduce.svg`
 - [x] **[Solid]** `map → shuffle → reduce` synchronization working (phase barrier)
 - [x] **[Solid]** System bootstrap handled cleanly (master binds before loading tasks; early workers `WAIT`)
-- [x] **[Advanced]** Protocol formalized & documented (messages, formats, FT edge cases) — `report/report.md` §2, FT diagram
+- [x] **[Advanced]** Protocol formalized & documented (messages, formats, FT edge cases) — `report/final_report.pdf` (protocol section + FT diagram)
 
 ## 4. MapReduce core
 - [x] **[Base]** Word frequency works on small splits (proof of concept)
@@ -33,7 +33,7 @@ Levels: **[Base]** minimum · **[Solid]** robust · **[Advanced]** goes further.
 - [x] **[Solid]** Remote read of local intermediates for reduce (parallel `ssh cat`, `ControlMaster`)
 - [x] **[Solid]** Results validated against a single-machine reference — `src/mapreduce/validate.py`
 - [x] **[Solid]** Full pipeline reproducible by **one person, no cluster** — `tests/run_all.py` (4 analyses + fault tolerance + Amdahl, 9/9 checks); manual demo via `src/benchmarks/local_cluster.sh`
-- [x] **[Advanced]** Works on real Common Crawl splits at scale (32 in the Amdahl sweep; design scales to 100/1000+ as MAP tasks ≫ workers) — *scale tested to tens; 1000+ left to lab time*
+- [x] **[Advanced]** Works on real Common Crawl splits at scale (16 in the cluster Amdahl sweep; design scales to 100/1000+ as MAP tasks ≫ workers) — *scale tested to tens; 1000+ left to lab time*
 
 ## 5. Common Crawl data
 - [x] **[Base]** Reading splits from NFS / `/cal/commoncrawl`-style shared input
@@ -44,27 +44,27 @@ Levels: **[Base]** minimum · **[Solid]** robust · **[Advanced]** goes further.
 - [x] **[Base]** Timing of every step (deploy, clean, I/O, sync/wait, network, compute) — `WORKER_TIMING`/`TIMING`
 - [x] **[Solid]** Bottlenecks identified and backed by measurements (compute > 85 %)
 - [x] **[Solid]** Reference point established (speedup = 1 for 1 node)
-- [x] **[Solid]** Speedup vs nodes graph, **same dataset at every point** — reproducible solo sweep `tests/run_all.py` (committed `runtime/amdahl_results.json` + `amdahl_speedup.png`); cluster sweep `amdahl_bench.py` + `plot_amdahl.py`
+- [x] **[Solid]** Speedup vs nodes graph, **same dataset at every point** — committed cluster sweep `report/amdahl_cluster.json` + `report/amdahl_cluster.png` (`src/benchmarks/amdahl_cluster_sweep.sh` + `plot_amdahl.py`); reproducible solo sweep `tests/run_all.py` (`report/amdahl_results.json` + `report/amdahl_speedup.png`)
 - [x] **[Advanced]** Know when interpolation is OK (single machine) vs not (≥2 nodes → measure)
-- [x] **[Advanced]** Amdahl verified empirically & interpreted (single-machine f ≈ 0.34, ceiling ≈ 3×; cluster of independent nodes ≈ 4–5×)
+- [x] **[Advanced]** Amdahl verified empirically & interpreted (single-machine f ≈ 0.349, ceiling ≈ 3×; cluster 16 splits, N=1..16: f ≈ 0.065, **7.74× at N=16**, ceiling ≈ 15.4×)
 
 ## 7. Fault tolerance
-- [x] **[Base]** Detection of a dead worker (heartbeat 2 s + lease 10 s / TCP close)
+- [x] **[Base]** Detection of a dead worker (heartbeat 2 s + lease 60 s / TCP close)
 - [x] **[Solid]** Re-execution of lost tasks by the Main (in-progress + completed MAP)
 - [x] **[Solid]** Atomic output writes (`.tmp` + `os.replace()`)
 - [x] **[Advanced]** Demonstration by killing nodes mid-computation — `src/deploy/fault_tolerance_demo.sh` (cluster) / `tests/run_all.py` (solo)
 - [x] **[Advanced]** Straggler handling (backup tasks, paper §3.6)
 
 ## 8. Comparison and Kafka Streams (light)
-- [x] **[Base]** Can situate batch vs stream — `report/report.md` §7
+- [x] **[Base]** Can situate batch vs stream — `report/final_report.pdf` (comparison section)
 - [x] **[Solid]** Minimal wordcount with Kafka Streams (downloaded files, no Docker/root) — `src/kafka/*`
 - [x] **[Solid]** Documented comparison vs Hadoop & Kafka Streams (incl. missing HDFS etc.)
 - [x] **[Advanced · optional]** Direct Common Crawl read via a **Kafka** source/connector — `src/kafka/commoncrawl_source.sh` streams a `.wet.gz` from `data.commoncrawl.org` (S3/HTTPS) straight into the input topic (no NFS, no file); wired into `run_wordcount.sh --crawl <ID> [--index N]`
 
 ## 9. Use cases, report and demo
 - [x] **[Base]** 3 use cases beyond wordcount — `lang`, `wordlen`, `bigram` (`-j` flag)
-- [x] **[Solid]** Use-case results interpreted and explained — `report/report.md` §6
-- [x] **[Base]** Report covers the 7 required points — `report/report.md`
+- [x] **[Solid]** Use-case results interpreted and explained — `report/final_report.pdf` (use-cases section)
+- [x] **[Base]** Report covers the 7 required points — `report/final_report.pdf`
 - [x] **[Base]** Demo ready (10+10), work distributed — `slides/presentation.md`
 
 ---
@@ -74,5 +74,5 @@ Levels: **[Base]** minimum · **[Solid]** robust · **[Advanced]** goes further.
 - **[Base] criteria ticked:** all of them.
 - **Two weakest points today:** (1) scale runs at 100/1000+ splits not yet executed (engine ready, needs lab time); (2) the multi-node cluster sweep itself is pending lab access (the engine runs solo end-to-end; `amdahl_bench.py` is ready for the cluster).
 - **Kafka owner:** clearly owned (deploy/clean/wordcount + Common Crawl source connector committed), not left to the last minute.
-- **What broke and why:** see `report/report.md` §5 (NFS overload, SSH fan-in, V1 single-worker hang, partial reduce writes, Amdahl wall).
+- **What broke and why:** see `report/final_report.pdf` (pain-points section): NFS overload, SSH fan-in, V1 single-worker hang, partial reduce writes, Amdahl wall.
 - **If the demo were tomorrow, what would not pass:** a 1000-split cluster run timing (we'd demo tens of splits solo); everything else — the 4 analyses, fault tolerance, Amdahl, and the Kafka Common-Crawl source — is demoable.

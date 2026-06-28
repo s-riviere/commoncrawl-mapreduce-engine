@@ -77,10 +77,9 @@ Host tp-*
 
 ## 2bis) Test solo en une commande
 
-> **Procédure de test complète sur le cluster Telecom :** voir le guide dédié
-> [TESTING.md](TESTING.md) (déploiement, monitoring, validation, tolérance aux
-> pannes, Amdahl, Kafka, nettoyage — avec exemples de sortie réels). Le mode solo
-> ci-dessous reste utile pour valider le code sans accès au cluster.
+> **Procédure cluster Telecom :** tout est décrit dans ce README — déploiement (§5),
+> Amdahl (§9), tolérance aux pannes (§10), validation (§12), nettoyage (§13), Kafka (§14).
+> Le mode solo ci-dessous reste utile pour valider le code sans accès au cluster.
 
 Pas besoin de toute l'équipe ni du cluster Telecom pour valider le système : le
 harnais [tests/run_all.py](tests/run_all.py) lance un **cluster MapReduce complet sur
@@ -174,7 +173,8 @@ runtime/
   machines.txt              # liste des machines cibles (générée, gitignored)
 
 report/
-  report.md                 # rapport (7 points demandés)
+  final_report.pdf          # rapport (7 points demandés)
+  final_report.tex          # source LaTeX du rapport
   amdahl_results.json       # données du graphe Amdahl solo (livré)
   amdahl_speedup.png        # graphe Amdahl solo (livré)
   amdahl_cluster.json       # données du sweep Amdahl cluster (livré)
@@ -182,7 +182,6 @@ report/
 slides/
   presentation.md           # support de démo (10 min)
 self-assessment.md          # questionnaire d'auto-évaluation rempli
-TESTING.md                  # runbook de test/démo complet (cluster Telecom)
 
 doc/
   optimizations.md
@@ -334,13 +333,14 @@ Note: les workers n'ont pas besoin d'un script d'arrêt dédié dans ce workflow
 
 ## 6) Chemins de données et stockage
 
-Variables utilisées dans [src/deploy/deploy_commoncrawl.sh](src/deploy/deploy_commoncrawl.sh):
+Variables utilisées dans [src/deploy/deploy_commoncrawl.sh](src/deploy/deploy_commoncrawl.sh)
+(`$USER` = votre login Telecom) :
 
-- NFS_DIR: ~/slr207-group1
-- NFS_INPUT_DIR: ~/slr207-group1/input
-- NFS_OUTPUT_DIR: ~/slr207-group1/output
-- LOCAL_MAP_DIR: /tmp/slr207-group1/map-outputs
-- REMOTE_LOG_DIR: /tmp/slr207-group1/logs/<timestamp>
+- NFS_DIR: ~/slr207-group1-commoncrawl-$USER
+- NFS_INPUT_DIR: ~/slr207-group1-commoncrawl-$USER/input
+- NFS_OUTPUT_DIR: ~/slr207-group1-commoncrawl-$USER/output
+- LOCAL_MAP_DIR: /tmp/slr207-group1-commoncrawl-$USER/map-outputs
+- REMOTE_LOG_DIR: /tmp/slr207-group1-commoncrawl-$USER/logs/<timestamp>
 
 Modèle de stockage:
 
@@ -403,6 +403,21 @@ Mesures utiles:
 3. Durée MAP.
 4. Durée SHUFFLE+REDUCE.
 5. Bottleneck (réseau, SSH, NFS, machine lente).
+
+### 9.1 Sweep Amdahl sur le cluster
+
+Le balayage Amdahl multi-nœuds (dataset fixe, N = 1, 2, 4, 8, 16 workers indépendants)
+est déjà mesuré et livré (`report/amdahl_cluster.json` + `report/amdahl_cluster.png`).
+Le reproduire (~15-20 min) :
+
+```bash
+bash src/benchmarks/amdahl_cluster_sweep.sh   # 16 splits, 8 reducers, N=1,2,4,8,16
+python3 src/benchmarks/plot_amdahl.py \
+    --input runtime/amdahl_cluster.json --output runtime/amdahl_cluster.png
+```
+
+Résultats mesurés: speedup jusqu'à **7,74×** à N=16, fraction série **f ≈ 0,065**
+(plafond théorique ≈ 15,4×). Détails et figure dans [report/final_report.pdf](report/final_report.pdf).
 
 ## 10) Tolérance aux pannes
 
@@ -500,11 +515,11 @@ bash src/kafka/commoncrawl_source.sh -c CC-MAIN-2024-10 -i 0
 
 Les comptes finaux coïncident avec ceux de notre moteur batch; la différence est
 opérationnelle (stream continu vs résultat final unique). Détails et tableau
-comparatif (nous vs Hadoop vs Kafka Streams): [report/report.md](report/report.md) §7.
+comparatif (nous vs Hadoop vs Kafka Streams): [report/final_report.pdf](report/final_report.pdf).
 
 ## 15) Livrables
 
-- Rapport (7 points demandés): [report/report.md](report/report.md)
+- Rapport (7 points demandés): [report/final_report.pdf](report/final_report.pdf)
 - Graphe de la loi d'Amdahl + données: [report/amdahl_speedup.png](report/amdahl_speedup.png), [report/amdahl_results.json](report/amdahl_results.json)
 - Support de démo (10 min, format Marp): [slides/presentation.md](slides/presentation.md)
 - Auto-évaluation remplie: [self-assessment.md](self-assessment.md)
