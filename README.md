@@ -7,13 +7,49 @@ Projet de calcul distribué sur les machines de TP Telecom Paris avec deux workf
 
 Ce README décrit l'état actuel du dépôt et les scripts utilisés en pratique.
 
+## 0) Démarrage rapide — reproduire sur le cluster Telecom
+
+> **Le cœur du projet** est le pipeline MapReduce **distribué en SSH** sur les machines
+> de TP. Le déploiement est entièrement automatisé : un seul script choisit les machines,
+> télécharge les splits CommonCrawl, démarre le master et les N workers, puis stream les
+> logs jusqu'à la fin du job.
+
+```bash
+# 1. Récupérer le code (sur une machine ayant accès SSH au cluster Telecom)
+git clone https://github.com/kabilaymen/Distributed-Computing-Project.git
+cd Distributed-Computing-Project
+pip install -e .
+
+# 2. Déployer un wordcount distribué : 8 workers, 8 reducers, 8 splits CommonCrawl.
+#    Le script affiche le master choisi (tp-XXXX) en Phase 1 et, en fin de job, une
+#    ligne « TIMING: {"t_total": ..., "t_map": ..., "t_reduce": ...} » (cf. §5.2).
+bash src/deploy/deploy_commoncrawl.sh -w 8 -r 8 -s 8 -j wordcount
+
+# 3. Valider : recalcul mono-machine de référence vs sortie distribuée (cf. §12).
+#    Remplacer tp-XXXX par le master affiché à l'étape 2 ; -s = même nb de splits.
+ssh tp-XXXX "python3 ~/slr207-group1-commoncrawl-$USER/validate.py \
+    -i ~/slr207-group1-commoncrawl-$USER/input \
+    -o ~/slr207-group1-commoncrawl-$USER/output -j wordcount -s 8"
+# -> se termine par « [VALIDATE] ✅ PASS »
+
+# 4. Nettoyer le cluster
+bash src/deploy/kill_commoncrawl.sh
+```
+
+Le reste du README détaille chaque étape : déploiement (§5), sweep d'Amdahl multi-nœuds
+(§9.1), tolérance aux pannes (§10), validation (§12), nettoyage (§13), Kafka (§14).
+
+> **Pas d'accès au cluster ?** Un harnais mono-machine rejoue tout le pipeline en local
+> en une commande (`python3 tests/run_all.py`) — voir §2bis.
+
 ## Table des matières
 
 - [Distributed Computing Project (SLR)](#distributed-computing-project-slr)
   - [Table des matières](#table-des-matières)
+  - [0) Démarrage rapide — cluster Telecom](#0-démarrage-rapide--reproduire-sur-le-cluster-telecom)
   - [1) Vue d'ensemble](#1-vue-densemble)
   - [2) Prérequis](#2-prérequis)
-  - [2bis) Test solo en une commande](#2bis-test-solo-en-une-commande)
+  - [2bis) Test solo sans cluster (optionnel)](#2bis-test-solo-sans-cluster-optionnel)
   - [3) Structure du dépôt](#3-structure-du-dépôt)
   - [4) Workflow A - CPU Load](#4-workflow-a---cpu-load)
     - [4.1 Objectif](#41-objectif)
@@ -75,59 +111,24 @@ Host tp-*
   IdentityFile ~/.ssh/<votre_cle>
 ```
 
-## 2bis) Test solo en une commande
+## 2bis) Test solo sans cluster (optionnel)
 
-> **Procédure cluster Telecom :** tout est décrit dans ce README — déploiement (§5),
-> Amdahl (§9), tolérance aux pannes (§10), validation (§12), nettoyage (§13), Kafka (§14).
-> Le mode solo ci-dessous reste utile pour valider le code sans accès au cluster.
-
-Pas besoin de toute l'équipe ni du cluster Telecom pour valider le système : le
-harnais [tests/run_all.py](tests/run_all.py) lance un **cluster MapReduce complet sur
-votre seule machine** (le master plus N workers comme processus séparés sur
-`localhost`, shuffle en lecture disque locale — donc **aucun `sshd` requis**) et vérifie
-tout le pipeline.
+Pour valider le code **sans accès au cluster Telecom**, le harnais
+[tests/run_all.py](tests/run_all.py) rejoue tout le pipeline sur une seule machine : il
+lance le master + N workers comme processus séparés sur `localhost`, avec shuffle en
+lecture disque locale (**aucun `sshd` requis**). Le moteur (`master.py` / `worker.py`)
+est strictement le même qu'en multi-nœuds ; seul le transport du shuffle change.
 
 ```bash
-python3 tests/run_all.py          # suite complète
+python3 tests/run_all.py          # suite complète (~1 min)
 python3 tests/run_all.py --quick  # version rapide (datasets réduits)
-python3 tests/run_all.py --keep   # conserve les fichiers /tmp générés
 ```
 
-Ce que le harnais couvre, sans intervention manuelle :
-
-1. **Correction** des quatre analyses (`wordcount`, `lang`, `wordlen`, `bigram`) :
-   chaque sortie distribuée est comparée au calcul mono-machine de référence
-   ([src/mapreduce/validate.py](src/mapreduce/validate.py)).
-2. **Tolérance aux pannes** : un worker est tué en cours de job ; le harnais vérifie
-   que le master détecte la panne, réassigne les tâches, et que le résultat final reste
-   correct.
-3. **Loi d'Amdahl** : un balayage N = 1, 2, 4 sur **un dataset fixe**, qui (ré)génère
-   `runtime/amdahl_results.json` et rend la figure `runtime/amdahl_speedup.png`
-   (via [src/benchmarks/plot_amdahl.py](src/benchmarks/plot_amdahl.py)).
-
-Le code de sortie est `0` si les 9 vérifications passent, `1` sinon — utilisable en CI.
-Le même moteur (`master.py` / `worker.py`) tourne en solo et en multi-nœuds : un worker
-lancé avec `--advertise-host 127.0.0.1 --local-shuffle` lit les partitions sur disque
-local au lieu de les tirer par SSH, tout le reste du protocole est identique.
-
-Pour une démo manuelle pas-à-pas sur une seule machine (master + N workers lancés à la
-main), utilisez [src/benchmarks/local_cluster.sh](src/benchmarks/local_cluster.sh) :
-
-```bash
-bash src/benchmarks/local_cluster.sh -i <dossier_splits> -n 4 --validate
-```
-
-### Dépendances optionnelles (figure + accélération)
-
-`numpy` (CRC32 vectorisé) et `matplotlib` (rendu de la figure) sont **optionnels** : le
-harnais fonctionne sans eux (repli Python pur, figure non rendue). Pour la figure et le
-chemin rapide, utilisez un venv :
-
-```bash
-python3 -m venv .venv && . .venv/bin/activate
-pip install matplotlib numpy scipy
-python tests/run_all.py
-```
+Couvre, sans intervention : correction des 4 analyses (`wordcount`, `lang`, `wordlen`,
+`bigram`) vs référence mono-machine, tolérance aux pannes (worker tué en plein job), et
+un mini sweep d'Amdahl (N = 1, 2, 4) qui régénère `runtime/amdahl_speedup.png`. Code de
+sortie `0` = tout PASS. `matplotlib`/`numpy` sont optionnels (repli Python pur, figure
+non rendue) ; installez-les dans un venv pour produire la figure.
 
 ## 3) Structure du dépôt
 
@@ -262,6 +263,27 @@ Paramètres principaux:
 - -r: nombre de reducers (défaut 10)
 - -s: nombre de splits CommonCrawl cibles (défaut 10)
 - -j: analyse à exécuter: `wordcount` (défaut) | `lang` | `wordlen` | `bigram`
+
+**Exemple complet** (8 workers, 8 reducers, 8 splits, wordcount) :
+
+```bash
+bash src/deploy/deploy_commoncrawl.sh -p 54321 -w 8 -r 8 -s 8 -j wordcount
+```
+
+**Exemple de sortie** (abrégé — noté le nom du master `tp-XXXX` affiché en Phase 1) :
+
+```text
+ Phase 0 : Fetching Alive Machines from API
+ Phase 1 : NFS Upload & Master Bootstrap
+Master infrastructure successfully established on tp-1a201-25:54321.
+ Phase 2 : Workers Bootstrap
+ Phase 3 : Monitoring MapReduce Execution
+ ... (logs master en direct) ...
+TIMING: {"t_total": 84.60, "t_map": 61.2, "t_reduce": 23.4}
+```
+
+La dernière ligne `TIMING: {...}` (JSON) est exploitable pour la loi d'Amdahl (§9).
+Press `Ctrl+C` pendant la Phase 3 détache seulement l'affichage ; le job continue.
 
 ### 5.3 Ce que fait le script de déploiement
 
@@ -472,6 +494,26 @@ tokenisation que le worker, garantissant un calcul de référence identique.
 
 ```bash
 python3 src/mapreduce/validate.py -i <dossier_input> -o <dossier_output> -j wordcount
+```
+
+Sur le cluster, on lance la validation **sur la machine du master** (qui voit `input/` et
+`output/` via le NFS partagé). `-s` doit valoir le **même nombre de splits** que le
+déploiement (§5.2), sinon la référence ne correspond pas à la sortie :
+
+```bash
+scp src/mapreduce/validate.py tp-XXXX:~/slr207-group1-commoncrawl-$USER/
+ssh tp-XXXX "python3 ~/slr207-group1-commoncrawl-$USER/validate.py \
+    -i ~/slr207-group1-commoncrawl-$USER/input \
+    -o ~/slr207-group1-commoncrawl-$USER/output -j wordcount -s 8"
+```
+
+**Exemple de sortie** (se termine par `✅ PASS`) :
+
+```text
+[VALIDATE] job=wordcount
+[VALIDATE] distinct keys : reference=... distributed=... (match)
+[VALIDATE] total counts  : reference=... distributed=... (match)
+[VALIDATE] ✅ PASS — distributed output matches single-machine reference
 ```
 
 Code de sortie: 0 = PASS, 1 = FAIL, 2 = erreur.
