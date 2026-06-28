@@ -4,7 +4,7 @@
 # DESCRIPTION
 # ==============================================================================
 # Robust parallel deployment for WSL2 over Campus Wi-Fi.
-# Uploads remote files (NFS) and machines.txt (/tmp) on one lab machine.
+# Uploads remote files (NFS) and machines.txt (/tmp/slr207-group1-cpuload) on one lab machine.
 # Then SSH-starts one server process per machine in machines.txt.
 #
 # Arguments:

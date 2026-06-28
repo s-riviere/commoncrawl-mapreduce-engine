@@ -9,6 +9,10 @@ import json
 import sys
 from pathlib import Path
 
+# TODO: Unused file (?)
+
+print("CE FICHIER EST BIEN UTILISE (GET_MACHINES.PY)")
+
 API_URL = "https://tp.telecom-paris.fr/ajax.php" 
 MACHINES_FILE = Path(__file__).resolve().parent.parent.parent / "runtime" / "machines.txt"
 
