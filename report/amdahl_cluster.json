@@ -1,0 +1,42 @@
+[
+  {
+    "n_workers": 1,
+    "n_splits": 16,
+    "n_reducers": 8,
+    "t_total": 521.659,
+    "t_map": 490.546,
+    "t_reduce": 31.114
+  },
+  {
+    "n_workers": 2,
+    "n_splits": 16,
+    "n_reducers": 8,
+    "t_total": 262.795,
+    "t_map": 245.258,
+    "t_reduce": 17.537
+  },
+  {
+    "n_workers": 4,
+    "n_splits": 16,
+    "n_reducers": 8,
+    "t_total": 137.150,
+    "t_map": 126.892,
+    "t_reduce": 10.258
+  },
+  {
+    "n_workers": 8,
+    "n_splits": 16,
+    "n_reducers": 8,
+    "t_total": 84.596,
+    "t_map": 77.686,
+    "t_reduce": 6.909
+  },
+  {
+    "n_workers": 16,
+    "n_splits": 16,
+    "n_reducers": 8,
+    "t_total": 67.367,
+    "t_map": 60.986,
+    "t_reduce": 6.382
+  }
+]

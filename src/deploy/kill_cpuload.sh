@@ -26,8 +26,8 @@ RED="\e[31m"
 # Failure behavior
 set -uo pipefail
 
-# Set the current directory to the root of the project
-cd "$(dirname "$0")/.."
+# Set the current directory to the root of the project (script lives in src/deploy/)
+cd "$(dirname "$0")/../.."
 
 
 # ==============================================================================

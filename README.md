@@ -13,6 +13,7 @@ Ce README décrit l'état actuel du dépôt et les scripts utilisés en pratique
   - [Table des matières](#table-des-matières)
   - [1) Vue d'ensemble](#1-vue-densemble)
   - [2) Prérequis](#2-prérequis)
+  - [2bis) Test solo en une commande](#2bis-test-solo-en-une-commande)
   - [3) Structure du dépôt](#3-structure-du-dépôt)
   - [4) Workflow A - CPU Load](#4-workflow-a---cpu-load)
     - [4.1 Objectif](#41-objectif)
@@ -31,19 +32,25 @@ Ce README décrit l'état actuel du dépôt et les scripts utilisés en pratique
   - [7) Protocole de messages MapReduce](#7-protocole-de-messages-mapreduce)
   - [8) Observabilité et logs](#8-observabilité-et-logs)
   - [9) Performance et bench](#9-performance-et-bench)
-  - [10) Limites et choix techniques](#10-limites-et-choix-techniques)
+  - [10) Tolérance aux pannes](#10-tolérance-aux-pannes)
+  - [11) Use cases (jobs) au-delà du wordcount](#11-use-cases-jobs-au-delà-du-wordcount)
+  - [12) Validation des résultats](#12-validation-des-résultats)
+  - [13) Nettoyage](#13-nettoyage)
+  - [14) Comparaison Kafka Streams](#14-comparaison-kafka-streams)
+  - [15) Livrables](#15-livrables)
+  - [16) Limites et choix techniques](#16-limites-et-choix-techniques)
 
 ## 1) Vue d'ensemble
 
 Le projet est organisé autour de scripts shell qui automatisent le déploiement sur des machines distantes accessibles en SSH.
 
-- Sélection des machines: [scripts/get_machines.sh](scripts/get_machines.sh)
-- Déploiement CPU Load: [scripts/deploy_cpuload.sh](scripts/deploy_cpuload.sh)
-- Arrêt/cleanup CPU Load: [scripts/kill_cpuload.sh](scripts/kill_cpuload.sh)
-- Déploiement CommonCrawl + MapReduce: [scripts/deploy_commoncrawl.sh](scripts/deploy_commoncrawl.sh)
-- Outils de bench shell: [scripts/bench.sh](scripts/bench.sh)
+- Sélection des machines: [src/deploy/get_machines.sh](src/deploy/get_machines.sh)
+- Déploiement CPU Load: [src/deploy/deploy_cpuload.sh](src/deploy/deploy_cpuload.sh)
+- Arrêt/cleanup CPU Load: [src/deploy/kill_cpuload.sh](src/deploy/kill_cpuload.sh)
+- Déploiement CommonCrawl + MapReduce: [src/deploy/deploy_commoncrawl.sh](src/deploy/deploy_commoncrawl.sh)
+- Outils de bench shell: [src/benchmarks/bench.sh](src/benchmarks/bench.sh)
 
-Le pipeline MapReduce actif est dans [src/map_reduce](src/map_reduce): master/worker et utilitaires CommonCrawl.
+Le pipeline MapReduce actif est dans [src/mapreduce](src/mapreduce): master/worker et utilitaires CommonCrawl.
 
 ## 2) Prérequis
 
@@ -68,32 +75,120 @@ Host tp-*
   IdentityFile ~/.ssh/<votre_cle>
 ```
 
+## 2bis) Test solo en une commande
+
+> **Procédure cluster Telecom :** tout est décrit dans ce README — déploiement (§5),
+> Amdahl (§9), tolérance aux pannes (§10), validation (§12), nettoyage (§13), Kafka (§14).
+> Le mode solo ci-dessous reste utile pour valider le code sans accès au cluster.
+
+Pas besoin de toute l'équipe ni du cluster Telecom pour valider le système : le
+harnais [tests/run_all.py](tests/run_all.py) lance un **cluster MapReduce complet sur
+votre seule machine** (le master plus N workers comme processus séparés sur
+`localhost`, shuffle en lecture disque locale — donc **aucun `sshd` requis**) et vérifie
+tout le pipeline.
+
+```bash
+python3 tests/run_all.py          # suite complète
+python3 tests/run_all.py --quick  # version rapide (datasets réduits)
+python3 tests/run_all.py --keep   # conserve les fichiers /tmp générés
+```
+
+Ce que le harnais couvre, sans intervention manuelle :
+
+1. **Correction** des quatre analyses (`wordcount`, `lang`, `wordlen`, `bigram`) :
+   chaque sortie distribuée est comparée au calcul mono-machine de référence
+   ([src/mapreduce/validate.py](src/mapreduce/validate.py)).
+2. **Tolérance aux pannes** : un worker est tué en cours de job ; le harnais vérifie
+   que le master détecte la panne, réassigne les tâches, et que le résultat final reste
+   correct.
+3. **Loi d'Amdahl** : un balayage N = 1, 2, 4 sur **un dataset fixe**, qui (ré)génère
+   `runtime/amdahl_results.json` et rend la figure `runtime/amdahl_speedup.png`
+   (via [src/benchmarks/plot_amdahl.py](src/benchmarks/plot_amdahl.py)).
+
+Le code de sortie est `0` si les 9 vérifications passent, `1` sinon — utilisable en CI.
+Le même moteur (`master.py` / `worker.py`) tourne en solo et en multi-nœuds : un worker
+lancé avec `--advertise-host 127.0.0.1 --local-shuffle` lit les partitions sur disque
+local au lieu de les tirer par SSH, tout le reste du protocole est identique.
+
+Pour une démo manuelle pas-à-pas sur une seule machine (master + N workers lancés à la
+main), utilisez [src/benchmarks/local_cluster.sh](src/benchmarks/local_cluster.sh) :
+
+```bash
+bash src/benchmarks/local_cluster.sh -i <dossier_splits> -n 4 --validate
+```
+
+### Dépendances optionnelles (figure + accélération)
+
+`numpy` (CRC32 vectorisé) et `matplotlib` (rendu de la figure) sont **optionnels** : le
+harnais fonctionne sans eux (repli Python pur, figure non rendue). Pour la figure et le
+chemin rapide, utilisez un venv :
+
+```bash
+python3 -m venv .venv && . .venv/bin/activate
+pip install matplotlib numpy scipy
+python tests/run_all.py
+```
+
 ## 3) Structure du dépôt
 
 ```text
-scripts/
-  deploy_cpuload.sh         # déploiement parallèle CPU Load
-  kill_cpuload.sh           # arrêt + nettoyage distant CPU Load
-  deploy_commoncrawl.sh     # déploiement complet CommonCrawl + MapReduce
-  get_machines.sh           # sélection des meilleures machines via API
-  bench.sh                  # instrumentation timing shell
-
 src/
-  cpu_load/
-    server.py               # serveur TCP renvoyant load averages
-    client.py               # client parallèle + rapport agrégat
-  map_reduce/
-    master.py               # master utilisé en déploiement CommonCrawl
-    worker.py               # worker utilisé en déploiement CommonCrawl
+  deploy/
+    get_machines.sh         # sélection des meilleures machines via API ajax.php
+    get_machines.py         # variante Python de la sélection
+    deploy_cpuload.sh       # déploiement parallèle CPU Load
+    kill_cpuload.sh         # arrêt + nettoyage distant CPU Load
+    deploy_commoncrawl.sh   # déploiement complet CommonCrawl + MapReduce
+    kill_commoncrawl.sh     # arrêt + nettoyage distant MapReduce
+    fault_tolerance_demo.sh # injection de panne (kill worker) pour démo FT
+  server/
+    server.py               # serveur TCP renvoyant load averages (CPU Load)
+  client/
+    client.py               # client parallèle + rapport agrégat (CPU Load)
+  mapreduce/
+    master.py               # master (tolérant aux pannes)
+    worker.py               # worker (heartbeat, jobs, écriture atomique)
+    validate.py             # vérif. résultat distribué vs calcul mono-machine
     download_commoncrawl.py # téléchargement WET en splits texte
+  kafka/
+    deploy_kafka.sh         # broker Kafka single-node (KRaft, sans Docker/root)
+    run_wordcount.sh        # démo Kafka Streams WordCount sur un split (ou --crawl)
+    commoncrawl_source.sh   # connecteur source : Common Crawl S3/HTTPS -> topic Kafka
+    clean_kafka.sh          # teardown du broker Kafka
+  benchmarks/
+    amdahl_bench.py         # sweep Amdahl multi-nœuds (SSH)
+    amdahl_cluster_sweep.sh # sweep Amdahl sur le cluster (N=1,2,4,8,16)
+    plot_amdahl.py          # rendu du graphe Amdahl (speedup vs nœuds)
+    ssh_parallelism_sweep.py# balayage du parallélisme SSH
+    demo_verified_run.sh    # déploiement démo (liste de machines vérifiées)
+    local_cluster.sh        # cluster MapReduce manuel sur une seule machine
+    find_scratch.sh         # exploration df/mount : recommande une partition scratch
+    bench.sh                # instrumentation timing shell
+    bench.py                # utilitaire Python d'instrumentation
+
+tests/
+  run_all.py                # harnais de test solo (correction + FT + Amdahl)
 
 runtime/
-  machines.txt              # liste des machines cibles
+  machines.txt              # liste des machines cibles (générée, gitignored)
+
+report/
+  final_report.pdf          # rapport (7 points demandés)
+  final_report.tex          # source LaTeX du rapport
+  amdahl_results.json       # données du graphe Amdahl solo (livré)
+  amdahl_speedup.png        # graphe Amdahl solo (livré)
+  amdahl_cluster.json       # données du sweep Amdahl cluster (livré)
+  amdahl_cluster.png        # graphe Amdahl cluster (livré)
+slides/
+  presentation.md           # support de démo (10 min)
+self-assessment.md          # questionnaire d'auto-évaluation rempli
 
 doc/
+  optimizations.md
   fault_tolerance/
   map_reduce/
   guidelines/
+  evaluation/
 ```
 
 ## 4) Workflow A - CPU Load
@@ -105,22 +200,22 @@ Démarrer un petit serveur TCP sur plusieurs machines et collecter la charge CPU
 ### 4.2 Déploiement
 
 ```bash
-bash scripts/deploy_cpuload.sh
-bash scripts/deploy_cpuload.sh 54555
+bash src/deploy/deploy_cpuload.sh
+bash src/deploy/deploy_cpuload.sh 54555
 ```
 
 Le script:
 
-1. Génère [runtime/machines.txt](runtime/machines.txt) via [scripts/get_machines.sh](scripts/get_machines.sh).
-2. Uploade [src/cpu_load/server.py](src/cpu_load/server.py) sur NFS distant.
+1. Génère [runtime/machines.txt](runtime/machines.txt) via [src/deploy/get_machines.sh](src/deploy/get_machines.sh).
+2. Uploade [src/server/server.py](src/server/server.py) sur NFS distant.
 3. Démarre un serveur par machine en parallèle.
 
 ### 4.3 Interrogation du cluster
 
 ```bash
-python3 src/cpu_load/client.py
-python3 src/cpu_load/client.py 54555
-python3 src/cpu_load/client.py 54555 --sync <host_reference>
+python3 src/client/client.py
+python3 src/client/client.py 54555
+python3 src/client/client.py 54555 --sync <host_reference>
 ```
 
 Le client:
@@ -132,8 +227,8 @@ Le client:
 ### 4.4 Arrêt et nettoyage
 
 ```bash
-bash scripts/kill_cpuload.sh
-bash scripts/kill_cpuload.sh 54555
+bash src/deploy/kill_cpuload.sh
+bash src/deploy/kill_cpuload.sh 54555
 ```
 
 Le cleanup:
@@ -155,8 +250,9 @@ Exécuter un wordcount distribué sur des fichiers CommonCrawl split en mode MAP
 ### 5.2 Déploiement complet
 
 ```bash
-bash scripts/deploy_commoncrawl.sh
-bash scripts/deploy_commoncrawl.sh -p 60000 -w 8 -r 8 -s 20
+bash src/deploy/deploy_commoncrawl.sh
+bash src/deploy/deploy_commoncrawl.sh -p 60000 -w 8 -r 8 -s 20
+bash src/deploy/deploy_commoncrawl.sh -w 8 -r 8 -s 20 -j lang
 ```
 
 Paramètres principaux:
@@ -165,11 +261,12 @@ Paramètres principaux:
 - -w: nombre de workers (défaut 10)
 - -r: nombre de reducers (défaut 10)
 - -s: nombre de splits CommonCrawl cibles (défaut 10)
+- -j: analyse à exécuter: `wordcount` (défaut) | `lang` | `wordlen` | `bigram`
 
 ### 5.3 Ce que fait le script de déploiement
 
 1. Récupère N+1 machines (1 master + N workers).
-2. Uploade [src/map_reduce/master.py](src/map_reduce/master.py), [src/map_reduce/worker.py](src/map_reduce/worker.py), [src/map_reduce/download_commoncrawl.py](src/map_reduce/download_commoncrawl.py) vers NFS distant.
+2. Uploade [src/mapreduce/master.py](src/mapreduce/master.py), [src/mapreduce/worker.py](src/mapreduce/worker.py), [src/mapreduce/download_commoncrawl.py](src/mapreduce/download_commoncrawl.py) vers NFS distant.
 3. Vérifie le stock de splits et télécharge seulement les manquants si nécessaire.
 4. Démarre le master (unbuffered, logs redirigés).
 5. Démarre les workers en parallèle.
@@ -186,6 +283,25 @@ Le téléchargement transforme les WET gzip en fichiers texte locaux nommés:
 
 Le mode --missing-only évite de retoucher les splits déjà présents.
 
+#### Lecture directe sans NFS (`--direct-read`) et espace scratch (`--spill-dir`)
+
+Pour supprimer totalement l'intermédiaire NFS (objectif day4 §2), démarrez le master avec
+`--crawl <CRAWL_ID>` (il embarque l'URL WET dans chaque tâche MAP) et lancez les workers
+avec `--direct-read` : chaque split est streamé puis décompressé **directement en mémoire**
+depuis `data.commoncrawl.org` (S3/HTTPS), sans fichier NFS ni staging disque.
+
+Le `/tmp` par défaut peut être un `tmpfs` réduit qui sature sous des centaines de
+téléchargements concurrents. [src/benchmarks/find_scratch.sh](src/benchmarks/find_scratch.sh) inspecte
+les montages (`df`/`mount`), exclut le NFS et recommande la plus grande partition locale
+inscriptible ; pointez-y le worker via `--spill-dir` (staging) et `-l` (partitions MAP) :
+
+```bash
+ssh <node> 'bash -s' < src/benchmarks/find_scratch.sh        # recommande un répertoire scratch
+python3 src/mapreduce/worker.py -h <master> -p 54321 \
+    -i <input> -o <output> -l <scratch>/map-outputs \
+    --direct-read --spill-dir <scratch>
+```
+
 ### 5.5 Cycle d'exécution MapReduce
 
 1. Worker envoie READY_FOR_TASK.
@@ -193,6 +309,9 @@ Le mode --missing-only évite de retoucher les splits déjà présents.
 3. Worker exécute la tâche.
 4. Worker envoie TASK_FINISHED.
 5. Master répond ACK.
+6. En parallèle, chaque worker envoie un HEARTBEAT toutes les 2 s; le master
+   détecte une panne sur fermeture TCP ou expiration du bail (60 s) et réassigne
+   les tâches perdues (voir section 10).
 
 Note: les workers n'ont pas besoin d'un script d'arrêt dédié dans ce workflow. Ils se terminent automatiquement lorsque le master ferme sa connexion (ou si le master est tué).
 
@@ -214,13 +333,14 @@ Note: les workers n'ont pas besoin d'un script d'arrêt dédié dans ce workflow
 
 ## 6) Chemins de données et stockage
 
-Variables utilisées dans [scripts/deploy_commoncrawl.sh](scripts/deploy_commoncrawl.sh):
+Variables utilisées dans [src/deploy/deploy_commoncrawl.sh](src/deploy/deploy_commoncrawl.sh)
+(`$USER` = votre login Telecom) :
 
-- NFS_DIR: ~/slr207-group1
-- NFS_INPUT_DIR: ~/slr207-group1/input
-- NFS_OUTPUT_DIR: ~/slr207-group1/output
-- LOCAL_MAP_DIR: /tmp/slr207-group1/map-outputs
-- REMOTE_LOG_DIR: /tmp/slr207-group1/logs/<timestamp>
+- NFS_DIR: ~/slr207-group1-commoncrawl-$USER
+- NFS_INPUT_DIR: ~/slr207-group1-commoncrawl-$USER/input
+- NFS_OUTPUT_DIR: ~/slr207-group1-commoncrawl-$USER/output
+- LOCAL_MAP_DIR: /tmp/slr207-group1-commoncrawl-$USER/map-outputs
+- REMOTE_LOG_DIR: /tmp/slr207-group1-commoncrawl-$USER/logs/<timestamp>
 
 Modèle de stockage:
 
@@ -240,17 +360,18 @@ Worker vers Master:
 
 - {"status": "READY_FOR_TASK"}
 - {"status": "TASK_FINISHED"}
+- {"status": "HEARTBEAT"}  (toutes les 2 s, détecteur de panne)
 
 Master vers Worker:
 
-- {"type": "MAP", "split_id": i, "n_reducers": r}
+- {"type": "MAP", "split_id": i, "n_reducers": r, "job": J, "url": ...}
 - {"type": "WAIT"}
-- {"type": "REDUCE", "reducer_id": j, "map_workers": [...]}
+- {"type": "REDUCE", "reducer_id": j, "map_workers": [...], "job": J}
 - {"status": "ACK"}
 
 Note:
 
-- Le déploiement CommonCrawl actif s'appuie sur [src/map_reduce](src/map_reduce).
+- Le déploiement CommonCrawl actif s'appuie sur [src/mapreduce](src/mapreduce).
 
 ## 8) Observabilité et logs
 
@@ -261,7 +382,7 @@ Logging applicatif:
 
 Monitoring en live:
 
-- [scripts/deploy_commoncrawl.sh](scripts/deploy_commoncrawl.sh) suit les logs master via tail -f.
+- [src/deploy/deploy_commoncrawl.sh](src/deploy/deploy_commoncrawl.sh) suit les logs master via tail -f.
 - Le suivi s'arrête automatiquement à la fin du process master.
 
 Conseil pratique:
@@ -272,8 +393,8 @@ Conseil pratique:
 
 Outils disponibles:
 
-- [scripts/bench.sh](scripts/bench.sh): chrono de phases shell (déploiement, upload, bootstrap, etc.).
-- [src/common/bench.py](src/common/bench.py): utilitaire Python pour instrumentation complémentaire.
+- [src/benchmarks/bench.sh](src/benchmarks/bench.sh): chrono de phases shell (déploiement, upload, bootstrap, etc.).
+- [src/benchmarks/bench.py](src/benchmarks/bench.py): utilitaire Python pour instrumentation complémentaire.
 
 Mesures utiles:
 
@@ -283,8 +404,131 @@ Mesures utiles:
 4. Durée SHUFFLE+REDUCE.
 5. Bottleneck (réseau, SSH, NFS, machine lente).
 
-## 10) Limites et choix techniques
+### 9.1 Sweep Amdahl sur le cluster
+
+Le balayage Amdahl multi-nœuds (dataset fixe, N = 1, 2, 4, 8, 16 workers indépendants)
+est déjà mesuré et livré (`report/amdahl_cluster.json` + `report/amdahl_cluster.png`).
+Le reproduire (~15-20 min) :
+
+```bash
+bash src/benchmarks/amdahl_cluster_sweep.sh   # 16 splits, 8 reducers, N=1,2,4,8,16
+python3 src/benchmarks/plot_amdahl.py \
+    --input runtime/amdahl_cluster.json --output runtime/amdahl_cluster.png
+```
+
+Résultats mesurés: speedup jusqu'à **7,74×** à N=16, fraction série **f ≈ 0,065**
+(plafond théorique ≈ 15,4×). Détails et figure dans [report/final_report.pdf](report/final_report.pdf).
+
+## 10) Tolérance aux pannes
+
+Le protocole V2 (voir [doc/fault_tolerance/fault_tolerance.seqdiag.txt](doc/fault_tolerance/fault_tolerance.seqdiag.txt))
+ajoute, au-dessus du chemin nominal:
+
+- **Détecteur de panne**: heartbeat worker -> master toutes les 2 s, bail `recv()`
+  de 60 s côté master. Un process tué ferme sa socket (détection immédiate), une
+  partition réseau est détectée à l'expiration du bail.
+- **Réassignation** (papier MapReduce §3.1): tâche en cours -> remise en file;
+  MAP terminé sur un worker mort -> **re-exécuté** (son `/tmp` est perdu);
+  REDUCE terminé -> **conservé** (écrit atomiquement sur NFS).
+- **Écriture atomique**: le reducer écrit `part-j.<pid>.tmp` puis `os.replace()`
+  vers `part-j.txt` (exactly-once, jamais de fichier à moitié écrit).
+- **Stragglers** (§3.6): quand la file MAP est vide mais que des tâches tournent
+  encore, un worker libre reçoit un **doublon** du split le plus lent; le premier
+  terminé gagne.
+
+Démonstration (tuer un worker en plein job):
+
+```bash
+# terminal 1 : lancer un job
+bash src/deploy/deploy_commoncrawl.sh -w 8 -r 8 -s 20
+# terminal 2 : injecter une panne
+bash src/deploy/fault_tolerance_demo.sh -n 1
+```
+
+Options de [src/deploy/fault_tolerance_demo.sh](src/deploy/fault_tolerance_demo.sh): `-n` nombre de workers à tuer, `-p` port, `-d` délai avant kill.
+
+## 11) Use cases (jobs) au-delà du wordcount
+
+Le même moteur distribué (même shuffle/reduce) sert quatre analyses; seul le keying
+de la phase MAP change, sélectionné par `-j`:
+
+| `-j` | Analyse | Clé MAP |
+|------|---------|---------|
+| `wordcount` (défaut) | fréquence des mots | mot -> 1 |
+| `lang` | popularité des langues | hit de stop-word -> langue |
+| `wordlen` | distribution des longueurs de mots | longueur -> 1 |
+| `bigram` | popularité des phrases | paire de mots consécutifs -> 1 |
+
+```bash
+bash src/deploy/deploy_commoncrawl.sh -w 8 -r 8 -s 20 -j bigram
+```
+
+## 12) Validation des résultats
+
+[src/mapreduce/validate.py](src/mapreduce/validate.py) recalcule le résultat sur
+**une seule machine** à partir des mêmes splits et le compare à la sortie distribuée
+(clés distinctes, totaux, égalité par clé). Il importe la même fonction de
+tokenisation que le worker, garantissant un calcul de référence identique.
+
+```bash
+python3 src/mapreduce/validate.py -i <dossier_input> -o <dossier_output> -j wordcount
+```
+
+Code de sortie: 0 = PASS, 1 = FAIL, 2 = erreur.
+
+## 13) Nettoyage
+
+```bash
+bash src/deploy/kill_commoncrawl.sh            # tue master/workers + nettoie /tmp
+bash src/deploy/kill_commoncrawl.sh -p 60000   # port spécifique
+bash src/deploy/kill_commoncrawl.sh -d         # supprime aussi la sortie NFS
+```
+
+[src/deploy/kill_commoncrawl.sh](src/deploy/kill_commoncrawl.sh) est idempotent: il tue les
+process master/worker, supprime les intermédiaires `/tmp` et les sockets de contrôle
+SSH, en parallèle sur toutes les machines de `machines.txt`.
+
+## 14) Comparaison Kafka Streams
+
+Broker Kafka 4.3 single-node en mode KRaft, **sans Docker ni root**, installé sous
+`/tmp/<user>-kafka`:
+
+```bash
+bash src/kafka/deploy_kafka.sh           # télécharge + démarre le broker
+bash src/kafka/run_wordcount.sh <fichier> # démo Kafka Streams WordCount
+bash src/kafka/clean_kafka.sh            # arrêt + nettoyage (-a wipe complet)
+```
+
+### Connecteur source Common Crawl → Kafka (§8)
+
+Pour lire Common Crawl **directement** dans Kafka, sans NFS ni fichier local, le
+connecteur source [src/kafka/commoncrawl_source.sh](src/kafka/commoncrawl_source.sh)
+résout un split depuis `wet.paths.gz` puis streame + décompresse + filtre les en-têtes WARC
+à la volée vers le topic d'entrée. Il est câblé dans la démo :
+
+```bash
+bash src/kafka/deploy_kafka.sh
+bash src/kafka/run_wordcount.sh --crawl CC-MAIN-2024-10 --index 0   # source directe S3
+# ou en autonome :
+bash src/kafka/commoncrawl_source.sh -c CC-MAIN-2024-10 -i 0
+```
+
+Les comptes finaux coïncident avec ceux de notre moteur batch; la différence est
+opérationnelle (stream continu vs résultat final unique). Détails et tableau
+comparatif (nous vs Hadoop vs Kafka Streams): [report/final_report.pdf](report/final_report.pdf).
+
+## 15) Livrables
+
+- Rapport (7 points demandés): [report/final_report.pdf](report/final_report.pdf)
+- Graphe de la loi d'Amdahl + données: [report/amdahl_speedup.png](report/amdahl_speedup.png), [report/amdahl_results.json](report/amdahl_results.json)
+- Support de démo (10 min, format Marp): [slides/presentation.md](slides/presentation.md)
+- Auto-évaluation remplie: [self-assessment.md](self-assessment.md)
+- Test solo reproductible (sans cluster): [tests/run_all.py](tests/run_all.py)
+
+## 16) Limites et choix techniques
 
 - Le parsing CommonCrawl est volontairement simple pour rester léger (petite pollution de métadonnées possible dans les splits).
 - La robustesse réseau reste dépendante de la stabilité SSH/Wi-Fi du lab.
-- Le protocole actuel ne couvre pas encore toutes les stratégies de tolérance aux pannes (timeout/retry/reassign complets). Si un des workers échoue durant l'éxecution d'un map reduce actuel, le processus entier sera bloqué et il faudra manuellement tuer master pour recommencer.
+- La tolérance aux pannes couvre la mort des **workers** (détection, ré-exécution, écriture atomique, stragglers). La **reprise du master** sur checkpoint est conçue dans le diagramme de séquence mais **non implémentée** dans le code.
+- Si un worker source d'un MAP meurt **pendant** la phase REDUCE, le master revient en phase MAP et ré-exécute tous les reduces (correct mais coûteux).
+- La tolérance aux pannes se teste **en solo** via [tests/run_all.py](tests/run_all.py) (shuffle en lecture disque locale, sans `sshd`). Le chemin de shuffle **distant par `ssh cat`** ne s'exerce, lui, que sur le cluster Linux.

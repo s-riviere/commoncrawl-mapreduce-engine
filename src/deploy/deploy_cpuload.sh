@@ -29,8 +29,8 @@ RED="\e[31m"
 # Failure behavior
 set -uo pipefail
 
-# Set the current directory to the root of the project
-cd "$(dirname "$0")/.."
+# Set the current directory to the root of the project (script lives in src/deploy/)
+cd "$(dirname "$0")/../.."
 
 
 # ==============================================================================
@@ -44,7 +44,7 @@ N_WORKERS=50
 # CONTENT
 # ==============================================================================
 MACHINES_FILE="runtime/machines.txt"
-FILES_TO_UPLOAD=("src/cpu_load/server.py")
+FILES_TO_UPLOAD=("src/server/server.py")
 
 DIR_NAME="slr207-group1-cpuload-${USER}"
 NFS_DIR="~/${DIR_NAME}"
@@ -60,8 +60,9 @@ SSH_OPTS="-4 \
 
 upload_to_host() {
     local host="$1"
-    timeout 10 ssh -n $SSH_OPTS "$host" "mkdir -p ${TMP_DIR}; chmod 777 ${TMP_DIR}" && \
-    timeout 10 scp $SSH_OPTS "$MACHINES_FILE" "${host}:/tmp/slr207-group1-cpuload/" && \
+    # timeout 10 ssh -n $SSH_OPTS "$host" "mkdir -p ${TMP_DIR}; chmod 777 ${TMP_DIR}" && \
+    timeout 10 ssh -n $SSH_OPTS "$host" "mkdir -p /tmp/slr207-group1-cpuload" && \
+    timeout 10 scp $SSH_OPTS "$MACHINES_FILE" "${host}:/tmp/slr207-group1-cpuload/machines.txt" && \
     timeout 10 ssh -n $SSH_OPTS "$host" "mkdir -p ${NFS_DIR}" && \
     timeout 10 scp $SSH_OPTS "${FILES_TO_UPLOAD[@]}" "${host}:${NFS_DIR}/"
 }
@@ -88,7 +89,7 @@ echo -e "================================================="
 echo -e ""
 
 mkdir -p "$(dirname "$MACHINES_FILE")"
-bash scripts/get_machines.sh -n "${N_WORKERS}" > "$MACHINES_FILE" || exit 1
+bash src/deploy/get_machines.sh -n "${N_WORKERS}" > "$MACHINES_FILE" || exit 1
 
 echo -e ""
 
@@ -158,7 +159,7 @@ echo -e ""
 # ── Final Report ──────────────────────────────────────────────────────────────
 echo -e "================================================="
 echo -e " Deployment complete."
-echo -e " python3 ../src/cpu_load/client.py --sync ${NFS_HOST} "
+echo -e "python3 ../client/client.py --sync ${NFS_HOST} "
 echo -e "================================================="
 
 exit 0

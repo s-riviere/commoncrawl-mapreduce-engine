@@ -10,3 +10,22 @@ __pycache__/
 client_timings.json
 amdahl_results*.json
 amdahl_speedup*.png
+venv/
+
+# ...but the Amdahl deliverables committed WITH the report must be tracked.
+!report/amdahl_results.json
+!report/amdahl_speedup.png
+
+# Datasets and job outputs must never be committed (see submission guidelines)
+commoncrawl-*.txt
+wet.paths*
+output/
+part-*.txt
+*.wet
+*.wet.gz
+*.warc
+*.warc.gz
+
+# Kafka local install / data (lives under /tmp on the cluster, but just in case)
+kafka_*/
+*.tgz

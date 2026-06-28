@@ -1,0 +1,26 @@
+[
+  {
+    "n_workers": 1,
+    "n_splits": 8,
+    "n_reducers": 8,
+    "t_total": 1.584,
+    "t_map": 1.579,
+    "t_reduce": 0.005
+  },
+  {
+    "n_workers": 2,
+    "n_splits": 8,
+    "n_reducers": 8,
+    "t_total": 1.006,
+    "t_map": 0.996,
+    "t_reduce": 0.01
+  },
+  {
+    "n_workers": 4,
+    "n_splits": 8,
+    "n_reducers": 8,
+    "t_total": 0.826,
+    "t_map": 0.814,
+    "t_reduce": 0.012
+  }
+]
