@@ -97,7 +97,12 @@
 \vspace{0.4cm}
 {\large Final Written Report\par}
 \rule{0.8\textwidth}{0.8pt}\par
-\vspace{2cm}
+\vspace{1.2cm}
+
+{\large\textbf{Team}\par}
+\vspace{0.3cm}
+{\large Camil Daou \quad$\cdot$\quad Aymen Kabil \quad$\cdot$\quad Rémi Deloye \quad$\cdot$\quad Sébastien Riviere\par}
+\vspace{1.4cm}
 
 \begin{tabular}{rl}
 \textbf{Course} & SLR207, Systèmes répartis / Distributed Computing\\[4pt]
@@ -166,6 +171,23 @@ machine-parsable log lines; the bottleneck and the Amdahl serial fraction are
 \emph{measured}, and optimisations are justified by before/after numbers.
 \end{itemize}
 
+\subsection{Why Python}
+
+We chose Python deliberately, not by default. It is one of the most widely used
+languages in the world today --- and the default choice for data processing and
+large-scale text/ML pipelines, exactly the domain a Common Crawl word-count
+belongs to. Building the engine in Python let us ask a pointed
+question: \emph{how far can we push an ``interpreted, GIL-bound, slow'' language
+on a genuinely parallel workload before it becomes the bottleneck?} That framing
+turned a potential weakness into one of the most interesting parts of the project. The
+GIL forced our per-worker parallelism to be process-level (which maps cleanly
+onto the distributed model), and the interpreter overhead made the MAP compute
+the measured bottleneck --- which is precisely what drove the optimisation work
+in \S\ref{sec:opt} and let us quantify the remaining gap with a C++ prototype
+($\sim$1.7$\times$ compute). In short: Python maximised readability and
+development speed, kept the standard-library-only constraint trivial to honour,
+and gave us a concrete, honest baseline to optimise against and reason about.
+
 \subsection{Repository map}
 
 \begin{table}[H]
@@ -187,6 +209,43 @@ machine-parsable log lines; the bottleneck and the Amdahl serial fraction are
 \bottomrule
 \end{tabularx}
 \end{table}
+
+\subsection{Contributions and collaboration}\label{sec:contrib}
+
+The project was built by a team of four; the work split roughly along the
+chronological phases of the project.
+
+\begin{table}[H]
+\centering
+\small
+\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+\textbf{Member} & \textbf{Main responsibilities}\\
+\midrule
+\textbf{Rémi Deloye} & First part of the project: deployment scripts, and the
+initial implementation and testing of the MapReduce engine (MAP/REDUCE cycle,
+barrier, shuffle).\\
+\textbf{Sébastien Rivière} & First part of the project (with Rémi): deployment
+scripts, and implementing and testing the core MapReduce engine.\\
+\textbf{Camil Daou} & Conception of the sequence diagrams; the \code{bench.py}
+measurement library and the Amdahl study; bottleneck testing and the worker
+optimisations (combine + bytes-regex + vectorised CRC32, parallel SSH shuffle,
+on-demand ingestion).\\
+\textbf{Aymen Kabil} & Deployment, the fault-tolerance layer (heartbeat/lease,
+re-execution, straggler backups, atomic commit), the Kafka Streams comparison,
+and integration of the remaining pieces of the system.\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\noindent We collaborated through \textbf{GitHub}, using separate feature
+branches per work-stream. We deliberately tried to work in a \emph{sequential}
+manner --- merging one branch before starting the next --- to keep the shared
+\code{master.py}/\code{worker.py} surface conflict-free. This held for most of
+the project; near the end, with several optimisation, fault-tolerance and
+benchmarking branches in flight at once, some merge conflicts became
+unavoidable and were resolved by hand.
 
 % =============================================================================
 \section{Warm-up workflow: the CPU-load cluster (Day 1)}\label{sec:cpuload}
@@ -599,12 +658,148 @@ filter removes it at the cost of a little extra parsing, a clean illustration of
 the cost/precision trade-off in real-world data cleaning.
 
 % =============================================================================
+\section{The \code{bench.py} measurement library}\label{sec:bench}
+% =============================================================================
+
+Every optimisation in \S\ref{sec:opt} is justified by a before/after number, and
+every one of those numbers had to be \emph{trustworthy}. That guarantee comes
+from \code{src/benchmarks/bench.py}, a small ($\sim$380-line, zero-dependency)
+statistical timing library we wrote before touching a single hot loop. It is the
+instrument the rest of the performance story is measured with, so it earns its
+own section.
+
+\subsection{Why we built it (and why not a bare chronometer)}
+
+The naïve way to time code is a single \code{time.time()} delta. We rejected it
+for three concrete reasons:
+\begin{itemize}
+\item \textbf{\code{time.time()} is not monotonic.} It follows the wall clock, so
+an NTP correction or a DST jump mid-measurement silently corrupts the delta.
+\code{bench.py} uses \code{time.perf\_counter\_ns()} --- a monotonic,
+nanosecond-resolution clock that never runs backwards.
+\item \textbf{One number is not a measurement.} A phase that runs many times (one
+TCP query per node, one MAP per split) has a \emph{distribution}, not a value. A
+single sample cannot tell a stable 30\,ms from a 30\,ms mean hiding a 200\,ms
+tail. We needed variance, percentiles, and a stability signal.
+\item \textbf{``Optimise the bottleneck'' requires knowing the bottleneck.}
+Guessing which phase dominates is how projects waste effort tuning code that is
+$2\%$ of the wall. We wanted the tool itself to \emph{attribute} time to phases
+and categories and name the culprit.
+\end{itemize}
+In short, we wanted the guarantees a tool like \emph{Google Benchmark} gives, but
+embedded in the project and aware of our own phase taxonomy.
+
+\subsection{How it works}
+
+The library is built around a \code{Registry} that stores every timed span as a
+\emph{sample} keyed by a label, and exposes three ways to feed it plus a
+reporting/export back end.
+
+\begin{itemize}
+\item \textbf{\code{phase(label, category)}} --- a context manager that times an
+arbitrary block and records one sample.
+\item \textbf{\code{@timed(...)}} --- a decorator that records one sample per call
+of a function.
+\item \textbf{\code{benchmark(label, fn, min\_time, warmup)}} --- the
+Google-Benchmark micro-benchmark loop: it runs \code{warmup} discarded
+iterations (to page in code and warm caches), then calls \code{fn} repeatedly,
+recording \emph{every} iteration as a sample, until a wall budget of
+\code{min\_time} seconds has accumulated. This auto-scales the iteration count so
+a 1\,µs kernel and a 1\,s kernel are both measured to the same statistical
+confidence.
+\end{itemize}
+
+Each sample carries a \textbf{category} --- \code{io}, \code{network},
+\code{compute}, \code{sync}, \code{deploy}, \code{cleanup} --- which is exactly
+the Day-4 breakdown the brief asks for. A representative use, comparing the MAP
+tokeniser candidates that became Optimisation~1:
+
+\begin{lstlisting}[language=python]
+import bench
+
+raw = open("commoncrawl-0000.txt", "rb").read()
+
+# auto-scaled micro-benchmarks: warm up, then loop until 0.5s of samples
+bench.benchmark("map:baseline",      lambda: baseline_split_isalnum(raw))
+bench.benchmark("map:bytes-regex",   lambda: _WORD_RE.findall(raw))
+bench.benchmark("map:combine+crc32", lambda: map_emit(raw, n_reducers))
+
+bench.report(title="MAP tokeniser candidates")   # ranks phases, names bottleneck
+bench.save_json("map_bench.json")                 # raw samples for plotting
+\end{lstlisting}
+
+From the collected samples, \code{stats()} computes a full \code{Stats} record
+per label:
+
+\begin{table}[H]
+\centering
+\small
+\renewcommand{\arraystretch}{1.2}
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+\textbf{Metric} & \textbf{Why it is reported}\\
+\midrule
+count, total & how many samples, and their summed time (drives the \% ranking)\\
+mean, median & central tendency; median resists outliers the mean does not\\
+p90, p95 & tail latency --- what a ``slow'' occurrence actually costs\\
+stdev, min, max & spread of the distribution\\
+\textbf{CV} $=\sigma/\mu$ & dimensionless \emph{stability}: the library flags any
+phase with $\ge 5$ samples and $\mathrm{CV}>0.5$ as \textbf{high variance}\\
+\bottomrule
+\end{tabularx}
+\caption{The per-phase statistics \code{bench.py} reports. Percentiles use linear
+interpolation over the sorted samples.}
+\end{table}
+
+\code{report()} then sorts phases by total time, prints a per-category roll-up,
+and explicitly names the \textbf{bottleneck phase} and \textbf{bottleneck
+category} --- so the tool answers ``what should I optimise?'' directly rather than
+leaving it to eyeballing. \code{save\_json()} dumps the raw per-sample series
+(clock, unit, samples, and the derived stats), which is the format the plotting
+scripts (\S\ref{sec:perf}) consume.
+
+\subsection{How it was used, and how it helped}
+
+\code{bench.py} was the decision procedure behind the optimisation work, not an
+afterthought:
+\begin{itemize}
+\item \textbf{It located the bottleneck first.} Before optimising, the category
+roll-up showed \code{compute} at \textbf{>85\%} of worker time, proving the MAP
+tokeniser --- not I/O or network --- was the thing to attack. That single result
+is what justified spending effort on the bytes-regex + combine + vectorised CRC32
+of Optimisation~1 (\S\ref{sec:opt}) instead of, say, the shuffle.
+\item \textbf{It compared candidates fairly.} The auto-scaling
+\code{benchmark()} loop let us race \code{split()+isalnum()} against the
+bytes-regex and the combine path on the \emph{same} input to the same time
+budget, so the $1.52\times$ compute speed-up is a measured ratio of stable means,
+not a lucky single run.
+\item \textbf{It told us when a number was noise.} The CV / high-variance flag
+kept us honest: network- and shuffle-category phases that showed
+$\mathrm{CV}>0.5$ were reported as unstable, which is precisely why the shuffle
+tuning was validated with a dedicated sweep
+(\code{ssh\_parallelism\_sweep.py}) rather than a single timing.
+\item \textbf{It produced the evidence.} The JSON export is the raw material
+behind the tables and figures in \S\ref{sec:opt} and the Amdahl study
+(\S\ref{sec:amdahl}); the same sample-based, per-phase, per-category methodology
+is mirrored by the distributed \code{WORKER\_TIMING} instrumentation
+(\S\ref{sec:perf}) that measures the real cluster.
+\end{itemize}
+The payoff is a project where ``we optimised X and it got faster'' is never a
+claim of faith: every such statement traces back to a distribution of samples
+collected by this library.
+
+% =============================================================================
 \section{Optimisations}\label{sec:opt}
 % =============================================================================
 
 We started from a deliberately naïve worker, measured it, and optimised the
-proven bottleneck. All numbers below are from \code{doc/optimizations.md} on the
-same 32-split workload.
+\emph{proven} bottleneck --- never a guessed one. Every number below comes from
+the raw per-phase benchmark logs
+(\code{amdahl\_results\_\{python,opt1,opt2,cpp\}.json}) captured on the
+\emph{same} 32-split, 8-reducer workload, so all four worker builds are directly
+comparable row-by-row. The methodology (warm-up, fixed-budget timing, the
+speed-up and Karp--Flatt derivations) is detailed in \S\ref{sec:amdahl}; here we
+report the outcomes.
 
 \subsection{Baseline (naïve worker)}
 
@@ -694,14 +889,170 @@ with ThreadPoolExecutor(max_workers=min(len(sources), 8)) as ex:
         all_raw_lines.extend(fut.result()[1])
 \end{lstlisting}
 
-\subsection{Optimisations that do \emph{not} move the wall}
+The direct effect is visible in the \code{t\_shuffle} column: the sequential
+reducer paid a shuffle cost that \emph{grew} with $N$ (more mappers to pull from,
+one at a time), whereas the parallel reducer's shuffle wall-time stays flat and
+small because it equals the \emph{slowest single} fetch, not their sum.
 
-Neither optimisation changes the Amdahl serial fraction much: the
-curve keeps its shape, just lower in absolute time (see \S\ref{sec:amdahl}).
-Future ideas (logged but not all benchmarked): gzip partitions before transfer,
-\emph{push} partitions after MAP instead of pulling, replace SSH with raw TCP,
-and a C++ worker (a prototype on the \code{cpp-worker} branch gives $\sim$1.7$\times$
-compute).
+\begin{table}[H]
+\centering
+\small
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{@{}rrrrr@{}}
+\toprule
+$N$ & opt1 $t_{\text{shuffle}}$ & opt2 $t_{\text{shuffle}}$ & opt1 $t_{\text{total}}$ & opt2 $t_{\text{total}}$\\
+\midrule
+1  &  4.8 & 1.2 & 174.4 & 127.7\\
+2  &  9.4 & 1.4 &  99.3 &  64.6\\
+4  & 16.8 & 2.1 &  68.7 &  39.9\\
+8  & 27.6 & 3.9 &  40.6 &  35.1\\
+16 & 28.2 & 2.8 &  45.2 &  39.4\\
+32 & 26.9 & 4.8 &  47.7 &  36.4\\
+\bottomrule
+\end{tabular}
+\caption{Optimisation 1 vs Optimisation 2 (seconds, 32 splits). The
+\code{t\_shuffle} column isolates the parallel-SSH change: a \textbf{5--8$\times$}
+reduction that no longer scales with the number of mappers. \code{t\_total} also
+improves because Opt2 is measured on the fully-tuned Python worker.}
+\end{table}
+
+\subsection{What the optimisations moved --- and what they did not}
+\label{sec:opt-scaling}
+
+A subtle but important point for the Amdahl discussion (\S\ref{sec:amdahl}): the
+optimisations \textbf{clearly lower the absolute wall-clock time}, but they
+\textbf{do not improve --- and in fact reduce --- the parallel speed-up ratio}.
+The two are not contradictory; they are the expected consequence of Amdahl's law.
+
+\begin{table}[H]
+\centering
+\small
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+worker build & $t_{\text{total}}(1)$ & best $t_{\text{total}}$ & peak speed-up & Karp--Flatt $e$ ($N{=}8$)\\
+\midrule
+Baseline (na\"ive)      & 275.4 & 53.5 (N=8)  & 5.15$\times$ & 0.079\\
+Opt1 (compute)          & 174.4 & 40.6 (N=8)  & 4.30$\times$ & 0.123\\
+Opt2 (+parallel shuffle)& 127.7 & 35.1 (N=8)  & 3.64$\times$ & 0.172\\
+C++ worker (prototype)  & 132.5 & 35.5 (N=16) & 3.73$\times$ & 0.180\\
+\bottomrule
+\end{tabular}
+\caption{Scalability summary across worker builds (32 splits). The absolute wall
+drops \textbf{53.5$\to$40.6$\to$35.1\,s}, yet peak speed-up \emph{falls}
+(5.15$\to$3.64$\times$) and the Karp--Flatt serial fraction \emph{rises}
+(0.079$\to$0.172).}
+\end{table}
+
+\textbf{Why the wall moves but the speed-up shrinks.} The Karp--Flatt metric
+$e = \left(\tfrac{1}{S_p}-\tfrac{1}{p}\right)\big/\left(1-\tfrac{1}{p}\right)$
+estimates the \emph{experimentally serial fraction}. Each optimisation attacks
+the \emph{parallel} part (per-split MAP compute), so it shrinks the numerator of
+the parallel work while the fixed serial/overhead cost (job setup, the final
+merge, and especially shuffle/NFS traffic) stays roughly constant. By Amdahl,
+making the parallel part cheaper \emph{raises} the serial \emph{fraction} of what
+remains --- hence a smaller speed-up even though every configuration finishes
+sooner in absolute terms. This is the correct, healthy outcome: we were paid in
+latency, not in a better slope.
+
+\textbf{The true ceiling is NFS-read contention, not a serial code path.} All
+builds reach their floor at $N{\approx}8$ and then \emph{regress} (e.g.\ Opt1:
+40.6\,s at $N{=}8$ but 47.7\,s at $N{=}32$). The cause is visible in the phase
+logs: \code{t\_io\_read} grows with $N$ (Opt1 rises from 3.4\,s at $N{=}1$ to
+\textbf{69\,s} at $N{=}32$) because every worker reads its split from the shared
+NFS home at once. This is an \emph{overhead} wall, not a fixed serial fraction,
+and it is precisely what the on-demand Common Crawl ingestion
+(\S\ref{sec:cc}) removes by having each worker pull its own split directly from
+Amazon into local \code{/tmp}.
+
+\subsection{Optimisation 3: on-demand ingestion --- and its superlinear scaling}
+\label{sec:opt-ondemand}
+
+The mechanism is described in \S\ref{sec:cc} (path~2): when the master ships a
+\code{url} with each MAP task, the worker downloads its split to local
+\code{/tmp}, processes it, and deletes it --- the shared NFS home is never
+touched on the read path. We benchmarked it on the real 32-split
+\code{CC-MAIN-2024-10} crawl to confirm it removes the contention wall above,
+and it produced the most interesting curve in the whole study: a
+\textbf{superlinear} speed-up ($S(N)>N$).
+
+\begin{table}[H]
+\centering
+\small
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{@{}rrrrrr@{}}
+\toprule
+$N$ & $t_{\text{total}}$ & speed-up & ideal & $t_{\text{dl,max}}$ & $t_{\text{io\_read}}$\\
+\midrule
+1 & 1646.6 & 1.00$\times$          & 1$\times$ & 172.2 & 16.1\\
+2 &  603.7 & \textbf{2.73$\times$} & 2$\times$ &   9.0 &  2.2\\
+4 &  307.8 & \textbf{5.35$\times$} & 4$\times$ &   8.6 &  1.5\\
+8 &  199.1 & \textbf{8.27$\times$} & 8$\times$ &  11.6 &  1.6\\
+\bottomrule
+\end{tabular}
+\caption{On-demand ingestion (seconds, 32 splits, \code{CC-MAIN-2024-10}).
+Speed-up \emph{exceeds} ideal-linear at every point. \code{t\_dl,max} is the
+longest single split download and \code{t\_io\_read} the local-disk read time.}
+\label{tab:ondemand}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{amdahl_ondemand.png}
+\caption{On-demand ingestion. Left: the measured speed-up sits \emph{above} the
+ideal-linear diagonal (the shaded superlinear region), reaching $8.27\times$ at
+$N{=}8$. Right: the mechanism --- the longest single split download
+(\code{t\_dl,max}) collapses from 172\,s at $N{=}1$ (one node, one throttled S3
+link) to $\approx$9\,s the instant a second node shares the load, so adding
+workers relieves a per-node bottleneck at the same time as it divides the work.}
+\label{fig:ondemand}
+\end{figure}
+
+\textbf{What it fixes.} The read path no longer goes through NFS, so
+\code{t\_io\_read} stays flat at $\approx$1.5\,s for $N\ge2$ instead of climbing
+to 69\,s (\S\ref{sec:opt-scaling}); the $\sim$5\,GB NFS quota and the separate
+pre-staging step both disappear, and each node only ever fetches the handful of
+splits it will actually process.
+
+\textbf{Why the curve goes superlinear (the advantage).} Amdahl assumes the work
+and the machine are fixed, so $S(N)\le N$. Here the \emph{per-node} resource
+budget changes with $N$. At $N{=}1$ a single node must pull all 32 splits over
+\emph{one} network link and one disk: the longest single download alone is
+\textbf{172\,s} (one IP hammering S3 gets throttled), and the serialised
+downloads dominate the 1647\,s baseline. Add nodes and the aggregate download
+bandwidth and the number of independent local disks both grow with $N$, so
+\code{t\_dl,max} collapses from 172\,s to $\approx$9\,s the moment a second
+machine joins. The parallelisable work is therefore divided by $N$ \emph{while}
+a per-node bottleneck is simultaneously relieved --- the two effects compound and
+push $S(N)$ above the diagonal.
+
+\textbf{The setbacks.} The same physics that makes the curve pretty makes it
+dishonest as an efficiency metric, and expensive at small $N$:
+\begin{itemize}
+\item \textbf{A pathological serial baseline.} The superlinear number is inflated
+by a crippled $N{=}1$ (1647\,s here vs $\approx$61\,s for the pre-staged path in
+\S\ref{sec:opt-scaling}). It measures \emph{escape from a resource bottleneck},
+not genuine compute parallelism, so it should not be read as ``better than
+perfect scaling''.
+\item \textbf{Amdahl no longer bounds it.} Because per-node bandwidth and cache
+change with $N$, the fixed-work model does not apply; the curve cannot be
+extrapolated with a single serial fraction $f$ the way the pre-staged sweeps can
+(\S\ref{sec:amdahl}).
+\item \textbf{External dependency and non-reproducibility.} Wall-time is now
+hostage to S3 bandwidth and throttling; \code{t\_download} varies run-to-run and
+the experiment is no longer self-contained.
+\item \textbf{Re-download on failure.} A re-executed MAP (\S\ref{sec:ft}) must
+re-fetch its split from the internet, since nothing is cached on NFS.
+\end{itemize}
+The takeaway: on-demand ingestion is the right choice at scale (it removes the
+NFS wall and lets download I/O parallelise across nodes), but its superlinear
+speed-up is a symptom of a resource-starved baseline, not a free lunch.
+
+\textbf{Future ideas} (logged, not all benchmarked): gzip partitions before
+transfer, \emph{push} partitions after MAP instead of pulling, replace SSH with
+raw TCP, and finishing the C++ worker (the \code{cpp-worker} prototype already
+gives $\sim$1.7$\times$ compute over the tuned Python worker, confirming the
+remaining cost is the interpreter, not the algorithm).
 
 % =============================================================================
 \section{Performance instrumentation}\label{sec:perf}
@@ -850,9 +1201,12 @@ $f$ is a property of the \emph{whole system}, not just the algorithm.}
 
 The two figures together tell the full story: on dedicated hardware the engine
 scales close to linear ($f=0.065$, $7.74\times$ at $N=16$); crammed onto a single
-shared machine it hits a wall near $3\times$ ($f=0.349$). Optimisations
-(\S\ref{sec:opt}) lower absolute time but barely move $f$, textbook Amdahl
-behaviour, demonstrated empirically and reproducibly.
+shared machine it hits a wall near $3\times$ ($f=0.349$). The per-build
+optimisations (\S\ref{sec:opt-scaling}) then lower absolute time while
+\emph{raising} the serial fraction $f$ --- and on-demand ingestion
+(\S\ref{sec:opt-ondemand}) even escapes the bound superlinearly --- so $f$ is a
+property of the \emph{whole system} (algorithm, I/O path, and hardware), exactly
+as Amdahl predicts, demonstrated empirically and reproducibly.
 
 % =============================================================================
 \section{Fault tolerance}\label{sec:ft}
@@ -1231,10 +1585,43 @@ $\approx$\textbf{435\,k} distinct-key lines, more than a 10$\times$ reduction,
 So $16$ splits $\times$ 435\,k keys, pre-aggregated and split $8$ ways, is a few
 MB per reducer: nowhere near saturation.
 
-\paragraph{Where the current code is still wasteful.} The reduce loop
-first does \code{readlines()} per source and accumulates \emph{every} incoming
-line into one list before folding it into the counter. That is fine at a few MB,
-but it is $O(\text{all incoming lines})$ and \emph{would} saturate at TB scale.
+\paragraph{The real inefficiency: an in-memory hash-merge, not an external
+sort-merge.} Beyond raw RAM there is an \emph{algorithmic} objection worth naming
+explicitly, because it is the sharpest critique of the reduce path. For each of
+the $M$ map sources the reducer calls \code{readlines()} and \code{extend}s every
+line into a single \code{all\_raw\_lines} list, and only \emph{then} folds that
+list into the \code{final\_counts} dict. So at peak it holds \emph{two} full
+copies of its shuffle input --- the raw-line list \emph{and} the growing hash map
+--- and performs the merge as one big \textbf{unsorted, in-memory hash
+aggregation over all $M$ partitions at once}. This departs from the canonical
+MapReduce reducer in three costly ways:
+\begin{itemize}[leftmargin=1.4em]
+  \item \textbf{Double materialisation.} Buffering into \code{all\_raw\_lines}
+  before aggregating is pure overhead: $O(\text{all incoming lines})$ memory plus
+  a large short-lived list for the garbage collector to churn. Folding each line
+  \emph{as it streams in} would both halve peak memory and let the merge overlap
+  the shuffle I/O.
+  \item \textbf{No sorted runs $\Rightarrow$ no streaming $k$-way merge.} Because
+  MAP writes each partition in \emph{hash} order rather than \emph{sorted} order,
+  the reducer cannot do the textbook external merge of $M$ pre-sorted runs ---
+  which touches only one line per source at a time, needs $O(\#\text{sources})$
+  memory, and is sequential and cache-friendly. Instead it pays for a full hash
+  table over the entire partition, with the random-access and rehash costs that
+  implies. This is precisely the ``a ton of in-memory merging'' inefficiency: the
+  work that Hadoop/Spark push into a disk-backed sort-merge, we currently do
+  eagerly in one RAM-resident dict.
+  \item \textbf{Sorted output is a \emph{partial} by-product.} We currently sort
+  the final counts by \emph{count} (descending) before writing, whereas an
+  external merge sorts by \emph{key}; the two orders differ, so the ranking would
+  not come entirely for free. A key-sorted merge would still eliminate the
+  separate hash table, and re-ranking the already-reduced keys by count is then a
+  cheap final pass over the \emph{distinct} keys only (a few $\times10^4$ per
+  reducer), not over the raw shuffle input.
+\end{itemize}
+It never bit us at $16$ splits --- the combiner keeps the working set at a few MB
+(above) --- but the observation is exactly right: this is the part of the design
+that would not survive a TB-scale partition, and the fix is the external
+sort-merge listed last below.
 
 \paragraph{How we guarantee it at any scale.} Four levers, in order of effort:
 \begin{enumerate}[leftmargin=1.6em]
@@ -1275,6 +1662,36 @@ By \textbf{remote read}: the Main hands the reducer the \{host, map\_dir\} of
 every map; the reducer runs \code{ssh host cat partition\_j.txt} against \emph{all}
 maps \textbf{in parallel} and sums. The bytes never transit the Main
 (\S\ref{sec:protocol}).
+
+\paragraph{Q: Wouldn't a raw TCP transfer have been faster than \code{ssh cat}?}
+On the wire, marginally yes; for this project, no --- and the numbers say the gap
+is not worth chasing. A raw-TCP shuffle avoids the SSH handshake, the per-fetch
+crypto, and forking a remote shell$+$\code{cat}. But three things make it the
+wrong trade here:
+\begin{itemize}[leftmargin=1.4em]
+  \item \textbf{We already amortised SSH's cost.} \code{ControlMaster=auto}
+  collapses every fetch to \emph{one} real TCP connection per host, reused across
+  reducers (\code{ControlPersist}), and the parallel \code{ThreadPoolExecutor}
+  floors shuffle wall-time at \textbf{1--5\,s across all $N$}
+  (\S\ref{sec:opt-scaling}). Shuffle is only $\approx$3--5\% of the wall, so even
+  a \emph{free} transport would shave a few percent at most --- Amdahl again.
+  \item \textbf{SSH gives us auth, encryption, and zero deployment for free.} Raw
+  TCP means running our \emph{own} data-serving daemon on every worker: an extra
+  process to deploy, supervise and tear down, plus its own framing and
+  connection management. We assume the university cluster is a \emph{trusted}
+  network, so the encryption/authentication SSH provides is not something we
+  strictly need here; but on any untrusted network an unauthenticated data port
+  would be a real exposure, and SSH gives that protection for free with no extra
+  work on our side.
+  \item \textbf{\code{ssh cat} is trivially correct.} A hand-rolled TCP protocol
+  needs framing, partial-read handling, backpressure and error recovery --- code
+  that can only lose against a one-line \code{cat} at our scale.
+\end{itemize}
+Raw TCP becomes the right answer only when shuffle actually dominates the wall
+(hundreds of workers, TB-scale partitions), and even then the bigger win is
+\emph{pushing} partitions from mappers as they finish so transfer overlaps
+compute, rather than pulling them afterwards --- both are listed as future work
+(\S\ref{sec:opt}).
 
 \paragraph{Q: How do you decide which node owns which key at reduce time?}
 We assign each key with \code{crc32(key)\,\%\,n\_reducers}. It is deterministic,
